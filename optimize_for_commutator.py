@@ -153,8 +153,8 @@ if __name__=="__main__":
                                            mol.n_electrons,
                                            mol.n_orbitals)
 
-        gamma_a, gamma_b, gamma_ab = compute_spin_rdms_from_statevector(
-            psi_full, mol.n_orbitals)
+        # gamma_a, gamma_b, gamma_ab = compute_spin_rdms_from_statevector(
+        #     psi_full, mol.n_orbitals)
     elif args.reference == "hf":
         psi_hf = np.zeros(H_number.shape[0])
         psi_hf[0] = 1.
@@ -166,8 +166,8 @@ if __name__=="__main__":
                                            mol.n_electrons,
                                            mol.n_orbitals)
 
-        gamma_a, gamma_b, gamma_ab = compute_spin_rdms_from_statevector(
-            psi_hf_full, mol.n_orbitals)
+        # gamma_a, gamma_b, gamma_ab = compute_spin_rdms_from_statevector(
+        #     psi_hf_full, mol.n_orbitals)
     else:
         raise ValueError("args.reference must be 'fci' or 'hf'")
 
@@ -178,23 +178,27 @@ if __name__=="__main__":
 
     n_points = initial_guesses.shape[0]
 
-    fieldnames = ["E_FCI", "V_0", "V_optimized",
-     "Sum_CommSq_0", "Sum_CommSq_Optimized", "a_opt", "b_opt", "c_opt"]
+    # fieldnames = ["E_FCI", "V_0", "V_optimized",
+    #  "Sum_CommSq_0", "Sum_CommSq_Optimized", "a_opt", "b_opt", "c_opt"]
 
-    data_filename = (mol.description + "_"
-                     + time.strftime("%Y%m%d_%H%M%S", time.localtime())
-                     + "_comm_opt_data.txt")
+    # data_filename = (mol.description + "_"
+    #                  + time.strftime("%Y%m%d_%H%M%S", time.localtime())
+    #                  + "_comm_opt_data.txt")
 
     xs_filename = (mol.description + "_"
                      + time.strftime("%Y%m%d_%H%M%S", time.localtime())
                      + "_x_comm_opt.txt")
 
-    with open(data_filename,
+    # with open(data_filename,
+    #           "a", newline="") as fp:
+    #     fp.write(str(vars(args)) + "\n")
+    #     # writer = csv.DictWriter(fp, fieldnames=fieldnames)
+    #     # writer.writeheader()
+    #     fp.write(" ".join(fieldnames) + "\n")
+
+    with open(xs_filename,
               "a", newline="") as fp:
         fp.write(str(vars(args)) + "\n")
-        # writer = csv.DictWriter(fp, fieldnames=fieldnames)
-        # writer.writeheader()
-        fp.write(" ".join(fieldnames) + "\n")
 
     for i in range(n_points):
         x_0 = initial_guesses[i, :]
@@ -205,24 +209,24 @@ if __name__=="__main__":
                        callback=callback if args.verbose else None)
         print(res.message)
 
-        variance_before = variance_restricted(
-                        gamma_a, gamma_b, gamma_ab, x_0, pairs)[0]
-
-        variance_after = variance_restricted(
-            gamma_a, gamma_b, gamma_ab, res.x, pairs)[0]
-
-        phi1, phi2 = res.x[m], res.x[m + 1]
-
-        # Spherical parameterization for sqrt(a^2 + b^2 + c^2) = 1
-        a_opt = np.sin(phi1) * np.cos(phi2)
-        b_opt = np.sin(phi1) * np.sin(phi2)
-        c_opt = np.cos(phi1)
-
-        out_row = np.array([E_fci, variance_before, variance_after,
-                               f(x_0), f(res.x), 1, b_opt / a_opt, c_opt / a_opt])
+        # variance_before = variance_restricted(
+        #                 gamma_a, gamma_b, gamma_ab, x_0, pairs)[0]
+        #
+        # variance_after = variance_restricted(
+        #     gamma_a, gamma_b, gamma_ab, res.x, pairs)[0]
+        #
+        # phi1, phi2 = res.x[m], res.x[m + 1]
+        #
+        # # Spherical parameterization for sqrt(a^2 + b^2 + c^2) = 1
+        # a_opt = np.sin(phi1) * np.cos(phi2)
+        # b_opt = np.sin(phi1) * np.sin(phi2)
+        # c_opt = np.cos(phi1)
+        #
+        # out_row = np.array([E_fci, variance_before, variance_after,
+        #                        f(x_0), f(res.x), 1, b_opt / a_opt, c_opt / a_opt])
 
         with open(xs_filename, "ab") as fp:
             np.savetxt(fp, res.x.reshape(1, res.x.shape[0]))
 
-        with open(data_filename, "ab") as fp:
-            np.savetxt(fp, out_row.reshape(1, out_row.shape[0]))
+        # with open(data_filename, "ab") as fp:
+        #     np.savetxt(fp, out_row.reshape(1, out_row.shape[0]))
