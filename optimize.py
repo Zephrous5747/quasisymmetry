@@ -1,104 +1,55 @@
-from optimization_different_abc import *
+"""Find approximate quasisymmetries for a given Hamiltonian and save their parameters."""
 
 import argparse
 from itertools import combinations
 import numpy as np
 import time
-import openfermion as of
-
-from optimization_abc import variance_restricted
-
-def expected_squared_commutator(H: np.ndarray,
-                                S: np.ndarray,
-                                psi: np.ndarray) -> float:
-    Apsi = H.dot(S.dot(psi)) - S.dot(H.dot(psi))
-    return np.linalg.norm(Apsi)**2
-
-
-def expected_squared_commutator_dm(H: np.ndarray,
-                                S: np.ndarray,
-                                rho: np.ndarray) -> float:
-    commutator = H @ S - S @ H
-    c_dag_c = commutator.T.conj() @ commutator
-    return np.trace(c_dag_c @ rho)
-
-
-def commutator_cost_function_fixed_abc(H_full, psi_full):
-    n_spin_orbitals = int(np.log2(psi_full.shape[0]))
-    n_orbitals = n_spin_orbitals // 2
-    pairs = list(combinations(range(n_orbitals), 2))
-    m = len(pairs)
-    def f(x):
-        a = np.sin(x[m]) * np.cos(x[m + 1])
-        b = np.sin(x[m]) * np.sin(x[m + 1])
-        c = np.cos(x[m])
-        U = build_U_from_thetas(n_orbitals, x[:m], pairs)
-        total_commutator_norm = 0
-        for i in range(n_orbitals):
-            Si_ferm = build_single_local_operator(U, n_orbitals, i,
-                    [(a, b, c)] * n_orbitals)
-            # Si_ferm = normal_ordered(
-            #     rotated_seniority_orbital_fermion(
-            #         U, i, n_orbitals, a, b, c
-            #     )
-            # )
-            Si_mat = fermion_to_sparse_qubit(Si_ferm, n_spin_orbitals)
-            total_commutator_norm += expected_squared_commutator(
-                H_full, Si_mat, psi_full)
-        return total_commutator_norm
-    return f
-
-
-def commutator_cost_number_pres(H, psi, num_electrons, n_orbitals):
-    """THIS COULD STILL BE FASTER"""
-    pairs = list(combinations(range(n_orbitals), 2))
-    m = len(pairs)
-
-    def f(x):
-        a = np.sin(x[m]) * np.cos(x[m + 1])
-        b = np.sin(x[m]) * np.sin(x[m + 1])
-        c = np.cos(x[m])
-        U = build_U_from_thetas(n_orbitals, x[:m], pairs)
-        symmetries = [(of.FermionOperator(((2 * i, 1), (2 * i, 0)), a)
-                       + of.FermionOperator(((2 * i + 1, 1), (2 * i + 1, 0)), b)
-                       + (of.FermionOperator(((2 * i, 1), (2 * i, 0)), c)
-                       * of.FermionOperator(((2 * i + 1, 1), (2 * i + 1, 0)), 1)))
-                      for i in range(n_orbitals)]
-
-        symmetry_inter_ops = [of.get_interaction_operator(s, n_qubits=2 * n_orbitals)
-                              for s in symmetries]
-
-        total = 0
-        for op in symmetry_inter_ops:
-            op.rotate_basis(U.T.conj())
-            op = of.get_fermion_operator(op)
-            op_mat = of.get_number_preserving_sparse_operator(
-                op, num_qubits=2 * n_orbitals,
-                num_electrons=num_electrons)
-            # print(op_mat.shape)
-            # print(H.shape)
-            comm = H @ op_mat - op_mat @ H
-            total += np.linalg.norm(comm @ psi)**2
-        return total
-
-    return f, m
-
-
-def sum_of_variances_cost_function_fixed_abc(psi_full):
-    n_spin_orbitals = int(np.log2(psi_full.shape[0]))
-    n_orbitals = n_spin_orbitals // 2
-    pairs = list(combinations(range(n_orbitals), 2))
-    gamma_a, gamma_b, gamma_ab = compute_spin_rdms_from_statevector(
-        psi_full, n_orbitals)
-    def f(x):
-        return variance_restricted(gamma_a, gamma_b, gamma_ab, x, pairs)[0]
-
-    return f
-
+import ffsim
+import scipy
+import pyscf
+from typing import Tuple, Callable
 
 def callback(intermediate_result):
     print(intermediate_result.fun)
     print(time.strftime("%a, %d %b %Y %H:%M:%S", time.localtime()))
+
+def commutator_cost_fci(moldata: ffsim.MolecularData) -> Callable:
+    h_linop = ffsim.linear_operator(moldata.hamiltonian,
+                                    norb=moldata.norb,
+                                    nelec=moldata.nelec)
+    fci_energy, fci_state = scipy.sparse.linalg.eigsh(h_linop, which="SA", k=1)
+
+    iu = np.triu_indices(moldata.norb, k=1)
+
+    def f(x):
+        a = np.sin(x[-2]) * np.cos(x[-1])
+        b = np.sin(x[-2]) * np.sin(x[-1])
+        c = np.cos(x[-2])
+        ops = []
+        for i in range(moldata.norb):
+            op = ffsim.FermionOperator(
+                {
+                    (ffsim.cre_a(i), ffsim.des_a(i)): a,
+                    (ffsim.cre_b(i), ffsim.des_b(i)): b,
+                    (ffsim.cre_a(i), ffsim.des_a(i), ffsim.cre_b(i), ffsim.des_b(i)): c
+                }
+            )
+            ops.append(op)
+        linops = [ffsim.linear_operator(op, moldata.norb, moldata.nelec) for op in ops]
+        rotation_generator = np.zeros((moldata.norb, moldata.norb))
+        rotation_generator[iu] = x[:-2]
+        rotation_generator -= rotation_generator.T
+        U = scipy.linalg.expm(rotation_generator)
+        rotated_psi = ffsim.apply_orbital_rotation(fci_state, U, moldata.norb, moldata.nelec)
+        states_after_s_i = [linop @ rotated_psi for linop in linops]
+        unrotated_states = [ffsim.apply_orbital_rotation(psi, U.T.conj(), moldata.norb, moldata.nelec)
+                            for psi in states_after_s_i]
+        final_states = [h_linop @ psi - fci_energy * psi for psi in unrotated_states]
+        return np.sum([np.linalg.norm(psi) ** 2 for psi in final_states])
+
+    # xdim = iu[0].shape[0] + 2
+
+    return f
 
 
 if __name__=="__main__":
@@ -115,106 +66,34 @@ if __name__=="__main__":
 
     args = parser.parse_args()
 
-    start_time = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+    mol = pyscf.lib.chkfile.load_mol(args.molpath)
+    mf = pyscf.scf.RHF(mol)
+    mf.update_from_chk(args.molpath)
 
-    mol = of.MolecularData(filename=args.molpath)
+    moldata = ffsim.MolecularData.from_scf(mf)
 
-    print("a, b, c are the same for all orbitals")
-    print(time.strftime("%a, %d %b %Y %H:%M:%S", time.localtime()))
-
-    H_ferm = of.get_fermion_operator(
-        mol.get_molecular_hamiltonian())
-    H_qubit = jordan_wigner(H_ferm)
-    H_full = get_sparse_operator(H_qubit, 2 * mol.n_orbitals).tocsc()
-
-    basis_bitstrings = [b for b in range(2**(2 * mol.n_orbitals))
-                        if popcount(b) == mol.n_electrons]
-    basis_idx = np.array(basis_bitstrings, dtype=int)
-
-    H_sub = H_full[basis_idx, :][:, basis_idx].tocsc()
-    evals, evecs = spla.eigsh(H_sub, k=1, which="SA")
-    E_fci = float(np.real(evals[0]))
-    v_sub = evecs[:, 0]
-
-    psi_full = np.zeros(2**(2 * mol.n_orbitals), dtype=np.complex128)
-    psi_full[basis_idx] = v_sub
-    psi_full /= np.linalg.norm(psi_full)
-
-    H_number = of.get_number_preserving_sparse_operator(
-        H_ferm, num_electrons=mol.n_electrons,
-        num_qubits=mol.n_orbitals * 2
-    ).todense()
-
-    if args.cost_function == "commutator":
-
-        if args.reference == "fci":
-
-            _, psi_fci_number = spla.eigsh(H_number, which="SA", k=1)
-
-            f, m = commutator_cost_number_pres(H_number,
-                                               psi_fci_number,
-                                               mol.n_electrons,
-                                               mol.n_orbitals)
-
-        elif args.reference == "hf":
-            psi_hf = np.zeros(H_number.shape[0])
-            psi_hf[0] = 1.
-            psi_hf_full = np.zeros(2**(2 * mol.n_orbitals), dtype=np.complex128)
-            psi_hf_full[basis_idx] = psi_hf
-
-            f, m = commutator_cost_number_pres(H_number,
-                                               psi_hf,
-                                               mol.n_electrons,
-                                               mol.n_orbitals)
-
-        else:
-            raise ValueError("args.reference must be 'fci' or 'hf'")
-
-    elif args.cost_function == "variance":
-
-        if args.reference == "fci":
-
-            f = sum_of_variances_cost_function_fixed_abc(psi_full)
-
-
-        elif args.reference == "hf":
-
-            psi_hf_small = np.zeros_like(evecs[:, 0])
-            psi_hf_small[-1] = 1
-            psi_hf_full = np.zeros(2 ** (2 * mol.n_orbitals), dtype=np.complex128)
-            psi_hf_full[basis_idx] = v_sub
-
-            f = sum_of_variances_cost_function_fixed_abc(psi_full)
-
-
-        else:
-            raise ValueError("args.reference must be 'fci' or 'hf'")
-
-    else:
-        raise ValueError("cost function is either commutator or variance")
-
-    pairs = list(combinations(range(mol.n_orbitals), 2))
-
-    initial_guesses = np.loadtxt(args.initialguesses)
-
-    n_points = initial_guesses.shape[0]
-
-    xs_filename = (mol.description + "_"
-                     + time.strftime("%Y%m%d_%H%M%S", time.localtime())
-                     + "_x_comm_opt.txt")
-
+    xs_filename = (time.strftime("%Y%m%d_%H%M%S", time.localtime())
+                   + "_x_opt.txt")
     with open(xs_filename,
               "a", newline="") as fp:
         fp.write(str(vars(args)) + "\n")
 
+    if args.cost_function == "commutator":
+        f = commutator_cost_fci(moldata)
+    else:
+        raise NotImplementedError()
+
+
+    initial_guesses = np.loadtxt(args.initialguesses)
+    n_points = initial_guesses.shape[0]
     for i in range(n_points):
         x_0 = initial_guesses[i, :]
         print("x0", x_0)
-        res = minimize(f, x_0,
-                       method="L-BFGS-B",
-                       options={"maxiter": 200},
-                       callback=callback if args.verbose else None)
+        res = scipy.optimize.minimize(f, x_0,
+                                      method="L-BFGS-B",
+                                      options={"maxiter": 100},
+                                      callback=callback if args.verbose else None)
         print(res.message)
-
         with open(xs_filename, "ab") as fp:
             np.savetxt(fp, res.x.reshape(1, res.x.shape[0]))
+
