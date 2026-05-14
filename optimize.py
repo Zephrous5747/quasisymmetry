@@ -167,7 +167,7 @@ if __name__=="__main__":
             y_0 = x_0[:-2]
             res = scipy.optimize.minimize(foo_abc_112, y_0,
                                           method="L-BFGS-B",
-                                          options={"maxiter": 100},
+                                          options={"maxiter": 1000},
                                           callback=callback if args.verbose else None)
 
             print(res.message)
