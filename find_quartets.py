@@ -156,7 +156,7 @@ def sector_metrics(moldata, state, U,
                    target_energy,
                    max_states_per_sector=100):
     print("sector dimensions:")
-    print({k: len(v) for k, v in sectors.items()})
+    print([len(v) for v in sectors.values()])
 
 
     rotated_h_linop = ffsim.linear_operator(moldata.hamiltonian.rotated(U),
@@ -286,7 +286,7 @@ def sector_metrics(moldata, state, U,
     sector_data = {"K_en": K_en,
                    "K_overlap": K_overlap,
                    "Energy sectors": energy_sectors_used,
-                   "Ovelap sectors": overlap_sectors_used,
+                   "Overlap sectors": overlap_sectors_used,
                    "Decoupled_energy": min(list(pooled_energies.values())),
                    "BO energy": min(es_bo)
                    }
@@ -315,6 +315,7 @@ def args_parser():
     parser.add_argument("--initial_guess", default=None)
     parser.add_argument("--initial_guess_scale",
                         default=-2, type=int)
+    parser.add_argument("--dontsave", action="store_true")
     return parser
 
 
@@ -339,10 +340,10 @@ if __name__=="__main__":
     else:
         raise ValueError("--reference can be 'hf' or 'fci'")
 
-    mo_quartets = all_quartet_commutators(moldata, state, np.eye(moldata.norb))
-    mo_quartets_matrix = np.triu(nx.adjacency_matrix(mo_quartets).todense(), 1)
+    mo_quartets_graph = all_quartet_commutators(moldata, state, np.eye(moldata.norb))
+    mo_quartets_adj = np.triu(nx.adjacency_matrix(mo_quartets_graph).todense(), 1)
     iu = np.triu_indices(moldata.norb, 1)
-    mo_quartets_sorted = np.sort(mo_quartets_matrix[iu])
+    mo_quartets_sorted = np.sort(mo_quartets_adj[iu])
     sum_of_lowest_mo_quartets = np.sum(mo_quartets_sorted[:moldata.norb])
     print("Sum of lowest m quartets (canonical orbitals)", sum_of_lowest_mo_quartets)
 
@@ -355,11 +356,15 @@ if __name__=="__main__":
         raise ValueError()
     print(list(quartet_graph.edges()))
 
+
+
     if args.optimization_mode is None or args.optimization_mode == "None":
         print("No orbital optimization")
         U = np.eye(moldata.norb)
+        f = nc_cost(moldata, state, quartet_graph)
     elif args.optimization_mode == "OO":
         print("Optimizing orbitals keeping the quartet graph fixed")
+
         f = nc_cost(moldata, state, quartet_graph)
 
         if args.initial_guess == "random":
@@ -377,48 +382,59 @@ if __name__=="__main__":
     else:
         raise ValueError()
 
-    optimized_quartets = all_quartet_commutators(moldata, state, U)
-    opt_quartets_matrix = np.triu(nx.adjacency_matrix(optimized_quartets).todense(), 1)
+    optimized_quartets_graph = all_quartet_commutators(moldata, state, U)
+    opt_quartets_matrix = np.triu(nx.adjacency_matrix(optimized_quartets_graph).todense(), 1)
     opt_quartets_sorted = np.sort(opt_quartets_matrix[iu])
     sum_of_lowest_opt_quartets = np.sum(opt_quartets_sorted[:moldata.norb])
     print("Sum of lowest m quartets (optimized orbitals)", sum_of_lowest_opt_quartets)
 
-    # with optimized quartets we can partition the function
-
-    best_quartet_indices = np.argsort(opt_quartets_matrix[iu])[:moldata.norb - 1]
+    best_quartet_indices = np.argsort(opt_quartets_matrix[iu])[:moldata.norb]
     best_quartets = tuple([(int(iu[0][i]), int(iu[1][i]))
                      for i in best_quartet_indices])
-    print("m-1 lowest NC factor quartets")
+    print("m lowest NC factor quartets")
     print(best_quartets)
 
     print("creating sectors")
-    sectors = quartet_sectors(best_quartets, moldata.norb, moldata.nelec)
+
+    spanning_edges = list(nx.minimum_spanning_edges(optimized_quartets_graph, keys=False, data=False))
+
+    print("Minimum spanning tree")
+    print(spanning_edges)
+
+    sectors = quartet_sectors(spanning_edges, moldata.norb, moldata.nelec)
 
     sector_data = sector_metrics(moldata, state, U, sectors,
                    target_energy=cisolver.e_tot + 0.0016)
 
     for k, v in sector_data.items():
-        print(k, v)
+        if k not in ("Energy sectors", "Overlap sectors"):
+            print(k, v)
 
     if args.visualize:
         visualize_nc(moldata, state, U)
 
     output = {"vars": vars(args),
-              "sector_data": sector_data,
-              "lowest_nc_quartets": best_quartets,
+              "quartet_graph_for_opt": list(quartet_graph.edges()),
+              "f(canonical)": f(np.zeros(comb(moldata.norb, 2))),
               "lowest_m_quartet_sum_mo": sum_of_lowest_mo_quartets,
+              "f(optimized)": res.fun if 'res' in globals() else None,
+              "lowest_nc_quartets": best_quartets,
               "lowest_m_quartet_sum_opt": sum_of_lowest_opt_quartets,
+              "sector_data": sector_data,
+              "Minimum spanning tree": spanning_edges,
               "FCI energy": cisolver.e_tot}
     stamp = uuid.uuid4().hex[:6]
 
     path_to_mol = Path(args.molpath)
-    title = "quartets_" + path_to_mol.name + "_" + stamp
-    with open(title, "a") as fp:
-        json.dump(output, fp)
 
-    np.savetxt("quartet_U_" + path_to_mol.name + "_" + stamp + ".txt", U)
-    np.savetxt("quartets_nc_" + path_to_mol.name + "_" + stamp + ".txt",
-               opt_quartets_matrix)
+    if not args.dontsave:
+        title = "quartets_" + path_to_mol.name + "_" + stamp
+        with open(title, "a") as fp:
+            json.dump(output, fp)
+
+        np.savetxt("quartet_U_" + path_to_mol.name + "_" + stamp + ".txt", U)
+        np.savetxt("quartets_nc_" + path_to_mol.name + "_" + stamp + ".txt",
+                   opt_quartets_matrix)
 
 
 
