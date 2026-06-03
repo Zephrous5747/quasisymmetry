@@ -9,6 +9,7 @@ import scipy
 import pyscf
 from typing import Tuple, Callable
 from pathlib import Path
+from math import comb
 
 from functools import cache
 
@@ -129,8 +130,9 @@ if __name__=="__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("molpath",
                         help="path to the Hamiltonian (PySCF checkfile)")
-    parser.add_argument("initialguesses",
-                        help="path to file with initial guesses (one line = one point)")
+    parser.add_argument("--initialguesses",
+                        help="path to file with initial guesses (one line = one point)",
+                        default=None)
     # parser.add_argument("cost_function", help="what to optimize over")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--reference",
@@ -175,8 +177,12 @@ if __name__=="__main__":
         x = np.concatenate([y, np.array(SENIORITY_ANGLES)])
         return f(x)
 
-
-    initial_guesses = np.loadtxt(args.initialguesses)
+    if args.initialguesses is not None:
+        initial_guesses = np.loadtxt(args.initialguesses)
+    else:
+        initial_guesses = np.zeros((1, comb(moldata.norb, 2) + 2))
+        # initial_guesses += np.random.randn(len(initial_guesses)) * 1e-3
+        initial_guesses[0, -2:] = SENIORITY_ANGLES
 
     if len(initial_guesses.shape) == 1:
         initial_guesses = initial_guesses.reshape((len(initial_guesses), 1)).T
@@ -195,6 +201,11 @@ if __name__=="__main__":
             with open(xs_filename, "ab") as fp:
                 np.savetxt(fp, res_x_extended.reshape(1, -1))
 
+            if args.verbose:
+                print("optimized U")
+                print(x_to_rotation(res.x, moldata.norb))
+                print(res)
+
         else:
             print("x0", x_0)
             res = scipy.optimize.minimize(f, x_0,
@@ -206,4 +217,11 @@ if __name__=="__main__":
             print(res.message)
             with open(xs_filename, "ab") as fp:
                 np.savetxt(fp, res.x.reshape(1, res.x.shape[0]))
+
+            if args.verbose:
+                print("optimized U")
+                print(x_to_rotation(res.x[:-2], moldata.norb))
+                print(res)
+
+
 

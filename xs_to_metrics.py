@@ -5,7 +5,7 @@ import numpy as np
 import scipy
 import json
 from tqdm import tqdm
-
+from pathlib import Path
 from itertools import product
 
 from optimize import commutator_cost, variance_cost, x_to_rotation
@@ -225,10 +225,20 @@ if __name__=="__main__":
                         help="path to file with data points (one line = one point)")
     args = parser.parse_args()
 
-    mol = pyscf.lib.chkfile.load_mol(args.molpath)
-    mf = pyscf.scf.RHF(mol)
-    mf.update_from_chk(args.molpath)
-    moldata = ffsim.MolecularData.from_scf(mf)
+    # mol = pyscf.lib.chkfile.load_mol(args.molpath)
+    # mf = pyscf.scf.RHF(mol)
+    # mf.update_from_chk(args.molpath)
+    # moldata = ffsim.MolecularData.from_scf(mf)
+    p = Path(args.molpath)
+    if p.suffix == ".chk":
+        mol = pyscf.lib.chkfile.load_mol(args.molpath)
+        mf = pyscf.scf.RHF(mol)
+        mf.update_from_chk(args.molpath)
+
+        moldata = ffsim.MolecularData.from_scf(mf)
+    elif p.suffix == ".FCIDUMP":
+        scf = pyscf.tools.fcidump.to_scf(args.molpath)
+        moldata = ffsim.MolecularData.from_scf(scf)
 
     commutator_fci = commutator_cost(moldata, "fci")
     commutator_hf = commutator_cost(moldata, "hf")
@@ -236,6 +246,8 @@ if __name__=="__main__":
     variance_hf = variance_cost(moldata, "hf")
 
     xs = np.loadtxt(args.xs, skiprows=1)
+    if len(xs.shape) == 1:
+        xs = xs.reshape((len(xs), 1)).T
     n_points = xs.shape[0]
 
     data_filename = args.xs + "_metrics.txt"
