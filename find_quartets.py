@@ -22,6 +22,7 @@ from pathlib import Path
 
 from optimize import x_to_rotation
 from xs_to_metrics import subspace_matrix
+from chemistry import load_moldata
 
 @cache
 def make_quartets(norb: int, nelec):
@@ -314,8 +315,8 @@ def args_parser():
                         help="Draw the NC metrics after optimization")
     parser.add_argument("--quartet_graph", default="topm")
     parser.add_argument("--initial_guess", default=None)
-    parser.add_argument("--initial_guess_scale",
-                        default=-2, type=int)
+    # parser.add_argument("--initial_guess_scale",
+    #                     default=-2, type=int)
     parser.add_argument("--dontsave", action="store_true")
     return parser
 
@@ -338,19 +339,32 @@ if __name__=="__main__":
 
         moldata = ffsim.MolecularData.from_scf(scf)
     elif p.suffix == ".FCIDUMP":
+        dumpdata = pyscf.tools.fcidump.read(args.molpath, verbose=False)
         scf = pyscf.tools.fcidump.to_scf(args.molpath)
-        moldata = ffsim.MolecularData.from_scf(scf)
+        moldata = ffsim.MolecularData.from_fcidump(args.molpath)
+
 
     print("finding fci") # we need it for energy metrics anyway
+    scf.kernel()
     cisolver = pyscf.fci.FCI(scf)
     cisolver.kernel()
 
     if args.reference == "fci":
         state = np.array(cisolver.ci.reshape((-1,)), dtype="complex") # ffsim will complain without dtype='complex'
+        state = ffsim.apply_orbital_rotation(state, scf.mo_coeff, moldata.norb, moldata.nelec)
+        # because some funny implicit rotation is going on
     elif args.reference == "hf":
         state = ffsim.hartree_fock_state(moldata.norb, moldata.nelec)
     else:
         raise ValueError("--reference can be 'hf' or 'fci'")
+
+    print("FCI energy")
+    print(cisolver.e_tot)
+    h = ffsim.linear_operator(moldata.hamiltonian, moldata.norb, moldata.nelec)
+    print(state.T.conj() @ h @ state)
+
+    # exit()
+
 
     mo_quartets_graph = all_quartet_commutators(moldata, state, np.eye(moldata.norb))
     mo_quartets_adj = np.triu(nx.adjacency_matrix(mo_quartets_graph).todense(), 1)
@@ -388,14 +402,18 @@ if __name__=="__main__":
 
         f = nc_cost(moldata, state, quartet_graph)
 
-        if args.initial_guess == "random":
-            rng = np.random.default_rng()
-            x0 = rng.normal(scale=10**(args.initial_guess_scale),
-                            size=comb(moldata.norb, 2))
-            print("NC cost, random initial guess {0:2.4f}".format(f(x0)))
-        else:
+        # if args.initial_guess == "random":
+        #     rng = np.random.default_rng()
+        #     x0 = rng.normal(scale=10**(args.initial_guess_scale),
+        #                     size=comb(moldata.norb, 2))
+        #     print("NC cost, random initial guess {0:2.4f}".format(f(x0)))
+        # else:
+        #     x0 = np.zeros(comb(moldata.norb, 2))
+        #     print("NC cost, canonical orbitals {0:2.4f}".format(f(x0)))
+        if args.initial_guess is None:
             x0 = np.zeros(comb(moldata.norb, 2))
-            print("NC cost, canonical orbitals {0:2.4f}".format(f(x0)))
+        else:
+            x0 = np.loadtxt(args.initial_guess)
 
         res = scipy.optimize.minimize(f, x0, method="L-BFGS-B", options={"maxiter": 500})
         print(res)

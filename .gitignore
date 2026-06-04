@@ -1,3 +1,5 @@
 *checkpoint.ipynb
 *.ipynb_checkpoints*
 .idea/
+__pycache__/
+outputs_/
