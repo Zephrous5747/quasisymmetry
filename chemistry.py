@@ -16,7 +16,7 @@ class FakeMolecularData:
     hamiltonian: of.InteractionOperator
 
 
-def load_moldata(molpath):
+def load_moldata(molpath) -> ffsim.MolecularData:
     p = Path(molpath)
     if p.suffix == ".chk":
         mol = pyscf.lib.chkfile.load_mol(molpath)
@@ -28,6 +28,32 @@ def load_moldata(molpath):
     else:
         raise ValueError("hamiltonian must be a pyscf checkfile or an fcidump")
     return moldata
+
+
+def fcidump_data(molpath):
+    p = Path(molpath)
+    if p.suffix == ".FCIDUMP":
+        return pyscf.tools.fcidump.read(molpath,
+                                            verbose=False)
+    elif p.suffix == ".chk":
+        dumpdata = {}
+        mol = pyscf.lib.chkfile.load_mol(molpath)
+        scf_data = pyscf.lib.chkfile.load(molpath, "scf")
+
+        scf = pyscf.scf.RHF(mol)
+        scf.update_from_chk(molpath)
+
+        dumpdata["NORB"] = mol.nao
+        dumpdata["NELEC"] = mol.nelec
+
+        mo_coeff = scf_data["mo_coeff"]
+        hcore_ao = mol.intor("int1e_kin") + mol.intor("int1e_nuc")
+        h1 = mo_coeff.T @ hcore_ao @ mo_coeff
+        dumpdata["H1"] = h1
+        dumpdata["H2"] = pyscf.ao2mo.full(mol, mo_coeff)
+        dumpdata["ECORE"] = mol.energy_nuc()
+        return dumpdata
+
 
 def get_mol(molname, bond):
     geometry, description = get_geometry_and_description(molname, bond)
