@@ -103,7 +103,7 @@ def visualize_nc(moldata, state, U, mo=False, save=False, mol=None, scf=None):
         plt.title("Optimized orbitals \n" + args.molpath)
         plt.colorbar()
         if save:
-            plt.savefig("canonical_orbitals.png", dpi=600, bbox_inches="tight", format="png")
+            plt.savefig("orbitals.png", dpi=600, bbox_inches="tight", format="png")
 
     adj = np.triu(nx.to_numpy_array(G), 0)
     plt.figure()
@@ -323,6 +323,7 @@ def args_parser():
     # parser.add_argument("--initial_guess_scale",
     #                     default=-2, type=int)
     parser.add_argument("--dontsave", action="store_true")
+    parser.add_argument("--skip_metrics", action="store_true")
     parser.add_argument("--sector_limit", type=int, default=None)
     parser.add_argument("--partitioning_graph", default="reuse", help="graph used for partitioning")
     return parser
@@ -471,20 +472,21 @@ if __name__=="__main__":
 
     sectors = quartet_sectors(partitioning_edges, moldata.norb, moldata.nelec)
 
-    if args.sector_limit is not None:
-        sector_data = sector_metrics(moldata, state, U, sectors,
-                   target_energy=cisolver.e_tot + 0.0016, max_states_per_sector=args.sector_limit)
-    else:
-        sector_data = sector_metrics(moldata, state, U, sectors,
-                                     target_energy=cisolver.e_tot + 0.0016)
+    if not args.skip_metrics:
+        if args.sector_limit is not None:
+            sector_data = sector_metrics(moldata, state, U, sectors,
+                       target_energy=cisolver.e_tot + 0.0016, max_states_per_sector=args.sector_limit)
+        else:
+            sector_data = sector_metrics(moldata, state, U, sectors,
+                                         target_energy=cisolver.e_tot + 0.0016)
 
-    for k, v in sector_data.items():
-        if k not in ("Energy sectors", "Overlap sectors"):
-            print(k, v)
+        for k, v in sector_data.items():
+            if k not in ("Energy sectors", "Overlap sectors"):
+                print(k, v)
 
     if args.visualize:
         if p.suffix == ".chk":
-            visualize_nc(moldata, state, U, scf=scf, mol=mol, mo=True)
+            visualize_nc(moldata, state, U, scf=scf, mol=mol, mo=True, save=True)
         else:
             visualize_nc(moldata, state, U, scf=None, mol=None)
 
@@ -496,7 +498,7 @@ if __name__=="__main__":
               "f(optimized)": res.fun if 'res' in globals() else None,
               "lowest_nc_quartets": best_quartets,
               "lowest_m_quartet_sum_opt": sum_of_lowest_opt_quartets,
-              "sector_data": sector_data,
+              "sector_data": sector_data if 'sector_data' in globals() else None,
               "Sector-defining graph": partitioning_edges,
               "FCI energy": cisolver.e_tot}
     stamp = uuid.uuid4().hex[:6]
