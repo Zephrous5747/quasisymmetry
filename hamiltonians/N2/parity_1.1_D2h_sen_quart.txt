@@ -1,0 +1,9 @@
+# 4 seniorities, 3 quartets
+1 0 0 0 0 0 0 0 0 0
+0 1 0 0 0 0 0 0 0 0
+0 0 1 0 0 0 0 0 0 0
+0 0 0 1 0 0 0 0 0 0
+# 3 quartets, two exact, one guess
+0 0 0 0 1 0 0 0 1 0
+0 0 0 0 0 1 0 1 0 0
+0 0 0 0 0 0 1 0 0 1

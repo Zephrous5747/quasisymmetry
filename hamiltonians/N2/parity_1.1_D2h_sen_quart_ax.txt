@@ -1,0 +1,11 @@
+# 4 seniorities, 3 quartets, one parity of all x antisymmetric orbitals
+1 0 0 0 0 0 0 0 0 0
+0 1 0 0 0 0 0 0 0 0
+0 0 1 0 0 0 0 0 0 0
+0 0 0 1 0 0 0 0 0 0
+# 3 quartets, two exact, one guess
+0 0 0 0 1 0 0 0 1 0
+0 0 0 0 0 1 0 1 0 0
+0 0 0 0 0 0 1 0 0 1
+# parity of axis reflection
+0 1 0 1 0 0 0 1 1 1
