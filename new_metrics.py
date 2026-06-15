@@ -121,6 +121,7 @@ if __name__=="__main__":
                         default=None)
     parser.add_argument("--states_per_sector", type=int, default=10)
     parser.add_argument("--K_method", default="PT")
+    parser.add_argument("--check_if_enough", action="store_true")
     args = parser.parse_args()
 
     moldata = load_moldata(args.molpath)
@@ -194,18 +195,15 @@ if __name__=="__main__":
 
     h_subspace = full_space_vectors_cat.T.conj() @ rotated_h_linop @ full_space_vectors_cat
 
+    if args.check_if_enough:
+        w_subspace, _ = scipy.sparse.linalg.eigsh(h_subspace, k=1, which="SA")
+        print("Coupled energy", w_subspace)
+        if w_subspace - e_fci > 0.0016:
+            print("Not enough states to reach chemical accuracy, increase states_per_sector")
+            quit()
     K, v = selected_column_solver(h_subspace, e_fci + 0.0016)
     print("K ", K)
-
-    # w_subspace, _ = scipy.sparse.linalg.eigsh(h_subspace, k=1, which="SA")
-    # print("Coupled energy", w_subspace)
-    # if w_subspace - e_fci > 0.0016:
-    #     print("Not enough states to reach chemical accuracy")
-    #     quit()
-    # else:
-    #     K, v = selected_column_solver(h_subspace, e_fci + 0.0016)
-    #     print("K ", K)
-
+    print("variance ", v.T.conj() @ h_subspace @ h_subspace @ v - (v.T.conj() @ h_subspace @ v) ** 2)
 
 
 
