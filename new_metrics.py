@@ -8,6 +8,7 @@ from tqdm import tqdm
 from pathlib import Path
 from itertools import product
 from math import comb
+import matplotlib.pyplot as plt
 
 from chemistry import load_moldata, fcidump_data
 from new_optimize import parity_matrix_to_quasisymmetries, x_to_rotation, get_fci
@@ -48,26 +49,65 @@ def subspace_matrix(A, support):
     return A_sub
 
 
-def submatrix_eigenvalues_to_target(A: np.ndarray, e_target: float) -> int:
+def submatrix_eigenvalues_to_target(A: np.ndarray, e_target: float):
     """Start in the upper left corner of A, take a KxK block and calculate its
     lowest eignvalue. Return the smallest K that yields energy below e_target
-    or -1 if no such thing can be found"""
-    e, _ = scipy.sparse.linalg.eigsh(A, which="SA", k=1)
+    or -1 if no such thing can be found, and the vector that does it"""
+    e_full, v_full = scipy.sparse.linalg.eigsh(A, which="SA", k=1)
+    energies = np.zeros(A.shape[0])
+    energies[0] = A[0, 0].real
+    # energies[0] = np.nan
 
-    if e > e_target:
-        return -1
+    if e_full > e_target:
+        return -1, v_full
     elif A[0, 0] < e_target:
-        return 1
+        v = np.zeros(A.shape[0])
+        v[0] = 1
+        return 1, v
     else:
-        for vec_count in tqdm(range(2, A.shape[0])):
-            submatrix = A[::vec_count, :][:, ::vec_count]
-            e, _ = scipy.sparse.linalg.eigsh(A, which="SA", k=1)
-            if e < e_target:
-                return vec_count
+        for vec_count in tqdm(range(2, A.shape[0] + 1)):
+            # submatrix = A[:vec_count, :][:, :vec_count]
+            submatrix = A[:vec_count, :vec_count]
+            # e, _ = scipy.sparse.linalg.eigsh(submatrix, which="SA", k=1)
+            e, v = np.linalg.eigh(submatrix)
+            energies[vec_count - 1] = e[0]
+            if e[0] < e_target:
+                y = np.zeros(A.shape[0], dtype="complex")
+                y[:vec_count] = v[:, 0]
+                return vec_count, y
+
         else:
+            plt.plot(energies - e_target)
+            plt.yscale("log")
+            plt.axhline(e_full - e_target)
+            plt.show()
             raise ValueError("this should never happen")
 
 
+def selected_column_solver(A: np.ndarray, e_target, thr=1e-8):
+    lowest_diag_index = np.argmin(np.diag(A))
+    vector_count = -1
+    current_vector = np.zeros(A.shape[0])
+    current_vector[lowest_diag_index] = 1
+    current_round = 0
+    current_dimension = 1
+    while vector_count == -1:
+        current_round += 1
+        if current_round > 1000:
+            raise ValueError("MaxIter")
+        print("SCI-like round ", current_round)
+        current_indices = np.where(abs(A @ current_vector) + abs(current_vector) > thr)
+        print("dimension ", len(current_indices[0]))
+        if len(current_indices[0]) == current_dimension:
+            Warning("stopping as nothing new found within thr")
+            break
+        current_dimension = len(current_indices[0])
+        submatrix = A[np.ix_(current_indices[0], current_indices[0])]
+        vector_count, v = submatrix_eigenvalues_to_target(submatrix, e_target)
+        current_vector = np.zeros(A.shape[0], dtype="complex")
+        current_vector[current_indices] = v.flatten()
+        print("SCI-like energy", current_vector.T.conj() @ A @ current_vector)
+    return vector_count, current_vector
 
 
 if __name__=="__main__":
@@ -154,38 +194,17 @@ if __name__=="__main__":
 
     h_subspace = full_space_vectors_cat.T.conj() @ rotated_h_linop @ full_space_vectors_cat
 
-    w_subspace, _ = scipy.sparse.linalg.eigsh(h_subspace, k=1, which="SA")
-    print("Coupled energy", w_subspace)
-    if w_subspace - e_fci > 0.0016:
-        print("Not enough states to reach chemical accuracy")
-        quit()
-    else:
-        lowest_energy_vector_index = np.argmin(np.diag(h_subspace))
-        pt_coefficients_numerator = abs(
-            h_subspace[:, lowest_energy_vector_index])**2
-        pt_coefficients_denominator = (np.diag(h_subspace)
-            - h_subspace[lowest_energy_vector_index, lowest_energy_vector_index])
-        pt_coefficients = pt_coefficients_numerator / pt_coefficients_denominator
-        pt_coefficients = np.nan_to_num(pt_coefficients, posinf=0, neginf=0,
-                                        nan=0)
-        pt_coeffs_order = np.argsort(abs(pt_coefficients))[::-1]
-        h_subspace_reordered = h_subspace[:, pt_coeffs_order][pt_coeffs_order, :]
-        K = submatrix_eigenvalues_to_target(h_subspace_reordered,
-                                            e_fci + 0.0016)
-        print("K ", K)
+    K, v = selected_column_solver(h_subspace, e_fci + 0.0016)
+    print("K ", K)
 
-
-    #
-    # for i, (k, v) in enumerate(sectors.items()):
-    #     full_space_vectors[v, i] = sector_gs_pairs[k][1].flatten()
-    #
-    # h_bo = full_space_vectors.T.conj() @ rotated_h_linop @ full_space_vectors
-    #
-    # w_bo, v_bo = np.linalg.eigh(h_bo)
-    # e_bo = np.min(w_bo)
-    #
-    # print("BO energy ", e_bo)
-
+    # w_subspace, _ = scipy.sparse.linalg.eigsh(h_subspace, k=1, which="SA")
+    # print("Coupled energy", w_subspace)
+    # if w_subspace - e_fci > 0.0016:
+    #     print("Not enough states to reach chemical accuracy")
+    #     quit()
+    # else:
+    #     K, v = selected_column_solver(h_subspace, e_fci + 0.0016)
+    #     print("K ", K)
 
 
 
