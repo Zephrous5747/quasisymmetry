@@ -11,7 +11,7 @@ from itertools import product
 from math import comb
 import matplotlib.pyplot as plt
 
-from chemistry import load_moldata, fcidump_data
+from chemistry import load_moldata, fcidump_data, CHEMICAL_PRECISION
 from new_optimize import parity_matrix_to_quasisymmetries, x_to_rotation, get_fci, commutator_cost
 
 
@@ -175,6 +175,7 @@ if __name__=="__main__":
                         help="calculate 'K' by increasing the number of states per sector,"
                              "up to --states_per_sector")
     parser.add_argument("--min_born_huang", type=int, default=1)
+    parser.add_argument("--direct_K", action="store_true")
     args = parser.parse_args()
 
     moldata = load_moldata(args.molpath)
@@ -203,6 +204,8 @@ if __name__=="__main__":
 
     e_fci, fcivec = get_fci(dumpdata)
     print("FCI ", e_fci)
+    rotated_fcivec = ffsim.apply_orbital_rotation(fcivec, U, norb=moldata.norb,
+                                                  nelec=moldata.nelec)
 
     f = commutator_cost(moldata, symmetries, fcivec)
     print("fci NC cost", f(x))
@@ -272,7 +275,23 @@ if __name__=="__main__":
 
     full_space_vectors_cat = np.concatenate(full_space_vectors, axis=1)
 
-  # if you use it on N2, you will run out of memory
+    if args.direct_K:
+        print("Calculating K directly from FCI")
+        coefficients = full_space_vectors_cat.T.conj() @ rotated_fcivec
+        weights_order = np.argsort(abs(coefficients))[::-1]
+        for K in range(1, full_space_vectors_cat.shape[1]):
+            compressed_coeffs = np.zeros_like(coefficients, dtype="complex")
+            compressed_coeffs[weights_order[:K]] = coefficients[weights_order[:K]]
+            compressed_coeffs /= np.linalg.norm(compressed_coeffs)
+            compressed_fcivec = full_space_vectors_cat @ compressed_coeffs
+            overlap = abs(compressed_fcivec.T.conj() @ fcivec)**2
+            e_K = compressed_fcivec.T.conj() @ rotated_h_linop @ compressed_fcivec
+            if e_K - e_fci < CHEMICAL_PRECISION:
+                print("K ",K)
+                quit()
+        else:
+            raise RuntimeError()
+
 
 
     if args.born_huang:

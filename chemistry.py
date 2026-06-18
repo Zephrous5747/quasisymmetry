@@ -7,6 +7,8 @@ import ffsim
 from pathlib import Path
 import pyscf
 
+CHEMICAL_PRECISION = 0.0016
+
 
 @dataclass
 class FakeMolecularData:
