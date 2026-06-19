@@ -1,21 +1,10 @@
 Optimizing quasisymmetries for quantum subspace expansion
 
-Linjun Wang, Alexey Uvarov
+Alexey Uvarov, Linjun Wang
 
-New workflow (using ffsim):
+Suggested usage:
 
-1. make_pyscf_hamiltonian
-2. generate_guesses
-3. optimize
-4. xs_to_costs
-
-
-Previous workflow:
-
-1. make_hamiltonian
-2. generate_init_guesses
-3. optimize_for_commutator
-4. xs_to_cost_functions_fixed_abc
-
-
-TODO: make the two `optimize_for_...` files into one, with optimization target being chosen as an input argument
+1. generate a Hamiltonian using `make_pyscf_hamiltonian.py` or bring your own (must be a pyscf .chk or .FCIDUMP)
+2. Find relevant quasisymmetries using `show_symmetries.py`
+3. Write down the ones you like as a binary matrix and optimize orbitals using `optimize_orbitals.py`
+4. Evaluate all sorts of things using `metrics.py`
