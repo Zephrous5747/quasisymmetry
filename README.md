@@ -1,12 +1,55 @@
-Optimizing quasisymmetries for quantum subspace expansion
+# Approximate symmetry finder (small systems)
 
-Alexey Uvarov, Linjun Wang
+This is a summary of the module that I am making by stitching together Praveen’s code with Linjun’s and mine.
 
-Suggested usage:
+#### make\_pyscf\_hamiltonian.py
 
-1. generate a Hamiltonian using `make_pyscf_hamiltonian.py` or bring your own (must be a pyscf .chk or .FCIDUMP)
-2. Find relevant quasisymmetries using `show_symmetries.py`
-3. Write down the ones you like as a binary matrix and optimize orbitals using `optimize_orbitals.py`
-4. Evaluate all sorts of things using `metrics.py`
+Can be used to produce a bunch of example Hamiltonians from a hard-coded list. Probably not a good practice but whatever.
 
-Note: for `metrics.py`, use the `--direct_K` key.
+#### show\_symmetries.py
+
+Given an electronic structure Hamiltonian, calculates the quartets and shows them as a plot
+
+#### find\_pauli\_symmetries.py
+
+Finds symmetries via beam search (or something else that you want)  
+input:
+
+1. Hamiltonian  
+2. the reference cost function (“fci”, “hf”, “cisd”)  
+3. cost function  
+4. keyword –senquart that constrains the symmetries to seniorities and quartets.
+
+Output:
+
+1. List of Pauli symmetries. If they are all Zs, also spits out a parity matrix.
+
+#### optimize\_symmetries.py
+
+Input arguments and keywords:
+
+1. Hamiltonian. Checkfile or FCIDUMP or of.QubitOperator (?).  
+2. Parity matrix of the symmetries  
+3. Reference state: \--reference, “fci”, “hf”, “cisd” (defaults to fci)  
+4. Cost function: variance to ref, NC to ref (defaults to NC)  
+5. x0: optional initial guess for orbital rotations
+
+Returns:
+
+1. Optimized orbitals, if the symmetries were supplied with parity  
+2. List of Pauli operators, if we used beam search.
+
+#### metrics.py
+
+Inputs:
+
+1. Hamiltonian  
+2. Parity matrix  
+3. rotation (optional)
+
+Outputs:
+
+1. Decoupled energy  
+2. K: number of sector eigenstates needed to reach chemical accuracy  
+3. Which sectors do these eigenstates come from
+
