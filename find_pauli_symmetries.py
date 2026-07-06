@@ -15,11 +15,11 @@ from itertools import combinations
 
 from chemistry import load_moldata, fcidump_data
 
-from src.state_utils import get_cisd_gs, get_hf_occ, get_hf_wfn
-from src.bs.beam import beam_search_symmetries, BeamSearch_Symmetries
-from src.bs.utils import mask_to_qubit_operator
-from src.metrics import variance
-import fcidump_openfermion
+from external_imports import get_cisd_gs, get_hf_occ, get_hf_wfn
+from external_imports import beam_search_symmetries, BeamSearch_Symmetries
+from external_imports import mask_to_qubit_operator
+from external_imports import variance, molecular_data_from_fcidump
+
 
 from optimize_symmetries import get_fci, expand_state, comm_sq_exp_fast
 
@@ -40,7 +40,7 @@ if __name__=="__main__":
 
     args = parser.parse_args()
 
-    mol = fcidump_openfermion.molecular_data_from_fcidump(args.molpath)
+    mol = molecular_data_from_fcidump(args.molpath)
 
 
     H = of.get_fermion_operator(mol.get_molecular_hamiltonian())
