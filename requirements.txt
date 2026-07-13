@@ -192,7 +192,6 @@ pytz==2024.1
 PyYAML==6.0.1
 pyzmq==26.1.0
 pyzx==0.9.0
-qc-PyCI @ file:///home/alexey/apps/pyci/pyci
 qcs-api-client-common==0.10.0
 qcs-sdk-python==0.21.6
 qiskit==2.1.2
