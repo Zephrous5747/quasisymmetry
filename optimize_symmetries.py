@@ -76,12 +76,14 @@ def commutator_cost(moldata: ffsim.MolecularData,
         h = ffsim.linear_operator(moldata.hamiltonian.rotated(U),
                                   norb=moldata.norb, nelec=moldata.nelec)
         total_nc = 0
+        h_on_rotated_state = h @ rotated_state # compute once for all symmetries
         for s in symmetries:
-            commutator = h @ s - s @ h
-            total_nc += np.linalg.norm(commutator @ rotated_state)**2
+            term1 = h @ (s @ rotated_state)
+            term2 = s @ h_on_rotated_state
+            commutator_on_state = term1 - term2
+            total_nc += np.vdot(commutator_on_state, commutator_on_state).real
         return total_nc
     return f
-
 
 def variance_cost(moldata: ffsim.MolecularData,
                     symmetries: list[scipy.sparse.linalg.LinearOperator],
@@ -98,6 +100,53 @@ def variance_cost(moldata: ffsim.MolecularData,
         return total_var
     return f
 
+"""Cost function measuring summed variances of general symmetry operators for orbital-rotated reference state. Supports arbitrary symmetries with a fast path for parity-only cases reproducing variance_cost exactly."""
+def variance_cost_general(moldata: ffsim.MolecularData,
+                    symmetries: list[scipy.sparse.linalg.LinearOperator],
+                    reference_state: np.ndarray, only_parities=False) -> Callable:
+    def f(x: np.ndarray) -> float:
+        U = x_to_rotation(x, moldata.norb)
+        rotated_state = ffsim.apply_orbital_rotation(reference_state,
+                                                     U,
+                                                     moldata.norb,
+                                                     moldata.nelec)
+        total_var = 0
+        for s in symmetries:
+            if only_parities: # use simplified expression
+                total_var += 1 - ((rotated_state.T.conj() @ s @ rotated_state)**2).real
+            else:
+                total_var += (reference_state.T.conj() @ (s @ (s @ reference_state)) - (reference_state.T.conj() @ (s @ reference_state)) ** 2).real
+        return total_var
+    return f
+
+"""Cost function based on eigenvalue equation residuals, measuring how well rotated state satisfies eval equation for each symmetry operator.
+Similar in spirit as variance-based, but more efficient for
+parities using only_parities=True.
+
+Key differences from variance-based cost function:
+- additional arg evals: list of symmetry eigenvalues, to be precomputed by rounding <psi|S_i|psi>
+- parity-specific path (only_parities=True): instead of maximizing |<psi|U^dag S_i|psi>|^2,
+maximize (minimize) <psi|U^dag S_i|psi> for evals_i = +1 (-1).
+"""
+def eval_eq_cost(symmetries: list, evals: list,
+                    reference_state: np.ndarray, norb:int, nelec:int, only_parities=False) -> Callable:
+    if len(symmetries) != len(evals):
+        raise ValueError("len(evals) must match len(symmetries)")
+    def f(x):
+        U = x_to_rotation(x, norb)
+        rotated_state = ffsim.apply_orbital_rotation(reference_state,
+                                                     U,
+                                                     norb,
+                                                     nelec)
+        total = 0
+        for i in range(len(symmetries)):
+            if only_parities: # use simplified expression
+                total += 2 * (1 - evals[i] * np.vdot(rotated_state, symmetries[i] @ rotated_state).real)
+            else:
+                vec = symmetries[i] @ rotated_state - evals[i] * rotated_state
+                total += np.vdot(vec, vec).real 
+        return total
+    return f
 
 @cache
 def parities(norb: int, nelec: tuple[int, int]) -> list[scipy.sparse.linalg.LinearOperator]:
@@ -124,6 +173,8 @@ def parity_matrix_to_quasisymmetries(parity_matrix: np.ndarray,
                                      norb: int,
                                      nelec: tuple[int, int]) -> list[scipy.sparse.linalg.LinearOperator]:
     local_parities = parities(norb, nelec)
+    if len(parity_matrix) == 0: # needed when dealing with parities and numbers together
+        return([])
     if parity_matrix.shape[1] == norb:
         operators = []
         for i in range(parity_matrix.shape[0]): # rows
