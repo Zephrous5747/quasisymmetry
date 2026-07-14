@@ -24,17 +24,22 @@ python -m pip install block2
 
 Sector energy costs (`decoupled` / `fixed_sector` / `switching_sector`) need `--reference fci` or `hf`. Shared DMRG flags with `--reference dmrg`: `--bond_dim`, `--wavefunction_dir`, `--n_threads`.
 
-**`metrics.py`** — `--reference` plus `--backend` (sector eigensolver)
+**`metrics.py`** — `--backend` (sector eigensolver); no `--reference`
 
-| Combination | What happens |
-|-------------|--------------|
-| `--reference fci --backend fci` | eigsh / dense eigh per sector (default) |
-| `--reference fci --backend davidson` | PySCF Davidson on the same sector blocks |
-| `--reference dmrg --backend dmrg` | Block2 sector-targeted DMRG for E_dec / K |
+| Flag | What happens |
+|------|--------------|
+| `--backend fci` (default) | eigsh / dense eigh per sector |
+| `--backend davidson` | PySCF Davidson on the same sector blocks |
+| `--backend dmrg` | Block2 sector-targeted DMRG for E_dec / K (PT for K) |
 
-Omitting `--reference` in metrics picks the natural default (`dmrg` with `--backend dmrg`, else `fci`). `--solver` is a deprecated alias of `--backend`.
+K selection on CI backends (`--coupled_energy_method`):
 
-See `src/workflow_cli.py`. Each script prints a `[workflow]` banner at startup. Run `python <script> --help` for examples.
+| Method | Needs overlap wavefunction? |
+|--------|-----------------------------|
+| `perturbation` (default) | No — one-shot PT ordering |
+| `reference` | Yes — always a DMRG wavefunction (`get_dmrg_reference`) |
+
+See `src/workflow_cli.py`. Each script prints a `[workflow]` banner at startup.
 
 # Approximate symmetry finder (small systems)
 
@@ -120,16 +125,17 @@ Inputs:
 
 1. JSON from ``optimize_symmetries.py`` (molpath, parity, rotation, …)  
 2. \--backend fci\|davidson\|dmrg — sector eigensolver (alias: \--solver)  
-3. \--reference fci\|dmrg — comparison energy/state for dE and reference-K (must match backend; default follows backend)  
-4. Shared DMRG flags when using dmrg: \--bond\_dim, \--wavefunction\_dir, \--n\_threads; also \--penalty, \--max\_sectors, \--reorder, \--entanglement  
+3. \--coupled\_energy\_method perturbation\|reference — K ordering on CI backends (default perturbation). ``reference`` always overlaps against a DMRG wavefunction; PT needs no overlap state. ``--backend dmrg`` always uses PT.  
+4. Shared DMRG flags when using dmrg / overlap-K: \--bond\_dim, \--wavefunction\_dir, \--n\_threads; also \--penalty, \--max\_sectors, \--reorder, \--entanglement  
 5. Davidson flags (only with ``--backend davidson``): \--davidson\_tol, \--davidson\_max\_cycle, \--davidson\_max\_space
 
 Compare sector solvers on the same OO JSON:
 
 ```bash
 python metrics.py oo.json --backend fci
-python metrics.py oo.json --backend davidson --davidson_tol 1e-10
-python metrics.py oo.json --reference dmrg --backend dmrg --bond_dim 250 --penalty 30
+python metrics.py oo.json --backend davidson --coupled_energy_method perturbation
+python metrics.py oo.json --coupled_energy_method reference --bond_dim 250
+python metrics.py oo.json --backend dmrg --bond_dim 250 --penalty 30
 ```
 
 Outputs:
@@ -137,7 +143,7 @@ Outputs:
 1. Decoupled energy  
 2. K: number of sector eigenstates needed to reach chemical accuracy  
 3. Which sectors do these eigenstates come from  
-4. ``backend`` / ``reference`` / ``solve_time_s`` (and Davidson per-sector meta when applicable)
+4. ``backend`` / ``solve_time_s`` (and Davidson / overlap-K meta when applicable)
 
 All of this is saved in a JSON file.
 

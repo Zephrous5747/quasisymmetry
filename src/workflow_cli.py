@@ -1,17 +1,15 @@
 """Shared CLI vocabulary for optimize and metrics.
 
-``--reference`` (both scripts)
-    Which wavefunction / energy is treated as truth.
+``--reference`` (optimize only)
+    Which wavefunction / cost engine to use
+    (``fci`` / ``hf`` → CI costs; ``dmrg`` → Block2 MPS costs).
 
 ``--backend`` (metrics only)
-    Which sector eigensolver to use. Optimize does not take ``--backend``:
-    ``--reference`` alone picks the cost engine
-    (``fci`` / ``hf`` → CI statevector costs; ``dmrg`` → Block2 MPS costs).
+    Sector eigensolver: ``fci``, ``davidson``, or ``dmrg``.
 
-metrics.py backends
-    ``fci``       scipy eigsh / dense eigh on each sector block
-    ``davidson``  PySCF Davidson on the same sector blocks
-    ``dmrg``      Block2 sector-targeted DMRG (E_dec / K)
+Metrics K methods (``--coupled_energy_method``)
+    ``perturbation``  one-shot PT ordering (no overlap reference needed)
+    ``reference``     overlap ordering against a DMRG wavefunction only
 
 ``dmrg`` always means Block2. Shared flags: ``--bond_dim``,
 ``--wavefunction_dir``, ``--n_threads``.
@@ -22,7 +20,6 @@ from __future__ import annotations
 import argparse
 
 REFERENCE_CHOICES = ("fci", "hf", "dmrg")
-METRICS_REFERENCE_CHOICES = ("fci", "dmrg")
 METRICS_BACKEND_CHOICES = ("fci", "dmrg", "davidson")
 
 OPTIMIZE_EPILOG = """
@@ -43,19 +40,25 @@ examples
 """
 
 METRICS_EPILOG = """
-valid combinations
-------------------
-  --reference fci    --backend fci        # eigsh/eigh sectors (default)
-  --reference fci    --backend davidson   # PySCF Davidson on same blocks
-  --reference dmrg   --backend dmrg       # Block2 sector DMRG
+--backend (sector eigensolver)
+-----------------------------
+  --backend fci         eigsh/eigh on each sector block (default)
+  --backend davidson    PySCF Davidson on the same blocks
+  --backend dmrg        Block2 sector-targeted DMRG
 
-  Omitting --reference uses: dmrg if --backend dmrg, else fci.
+--coupled_energy_method (K selection; CI backends only)
+-------------------------------------------------------
+  perturbation   one-shot PT ordering (default); needs only an energy target
+  reference      overlap ordering vs a DMRG wavefunction (loads Block2 GS)
+
+  --backend dmrg always uses one-shot PT for K.
   --solver is an alias of --backend.
 
 examples
 --------
   python metrics.py oo.json
-  python metrics.py oo.json --backend davidson --davidson_tol 1e-10
+  python metrics.py oo.json --backend davidson --coupled_energy_method perturbation
+  python metrics.py oo.json --coupled_energy_method reference --bond_dim 250
   python metrics.py oo.json --backend dmrg --bond_dim 250 --penalty 30
 """
 
@@ -66,7 +69,7 @@ def add_dmrg_common_args(parser: argparse.ArgumentParser) -> None:
         "--bond_dim",
         type=int,
         default=250,
-        help="Block2 DMRG bond dimension (only when reference or backend is dmrg)",
+        help="Block2 DMRG bond dimension (dmrg paths / overlap-K reference)",
     )
     parser.add_argument(
         "--wavefunction_dir",
@@ -101,7 +104,7 @@ def add_optimize_workflow_args(parser: argparse.ArgumentParser) -> None:
 
 
 def add_metrics_workflow_args(parser: argparse.ArgumentParser) -> None:
-    """``--reference`` / ``--backend`` for ``metrics.py``."""
+    """``--backend`` for ``metrics.py`` (no ``--reference``)."""
     parser.add_argument(
         "--backend",
         "--solver",
@@ -116,27 +119,8 @@ def add_metrics_workflow_args(parser: argparse.ArgumentParser) -> None:
             "--solver is a deprecated alias of --backend."
         ),
     )
-    parser.add_argument(
-        "--reference",
-        choices=METRICS_REFERENCE_CHOICES,
-        default=None,
-        metavar="{fci,dmrg}",
-        help=(
-            "REFERENCE ENERGY/STATE for dE and reference-ordered K "
-            "(fci=PySCF FCI, dmrg=Block2 GS). "
-            "Default: dmrg when --backend dmrg, else fci. "
-            "Must match the backend (fci with fci|davidson; dmrg with dmrg)."
-        ),
-    )
     add_dmrg_common_args(parser)
     _attach_epilog(parser, METRICS_EPILOG)
-
-
-def resolve_metrics_reference(backend: str, reference: str | None) -> str:
-    """Default metrics reference from backend when the user omits --reference."""
-    if reference is not None:
-        return reference
-    return "dmrg" if backend == "dmrg" else "fci"
 
 
 def optimize_cost_engine(reference: str) -> str:
@@ -144,39 +128,23 @@ def optimize_cost_engine(reference: str) -> str:
     return "dmrg" if reference == "dmrg" else "statevector"
 
 
-def validate_metrics_workflow(parser: argparse.ArgumentParser, args) -> None:
-    """Reject illegal --reference/--backend pairs for metrics."""
-    args.reference = resolve_metrics_reference(args.backend, args.reference)
-    allowed = {
-        "fci": {"fci"},
-        "davidson": {"fci"},
-        "dmrg": {"dmrg"},
-    }
-    if args.reference not in allowed[args.backend]:
-        need = " or ".join(sorted(allowed[args.backend]))
-        parser.error(
-            f"invalid combination: --reference {args.reference} --backend {args.backend}\n"
-            f"  With --backend {args.backend} you must use --reference {need}.\n"
-            "  Valid pairs:\n"
-            "    --reference fci   --backend fci|davidson\n"
-            "    --reference dmrg  --backend dmrg"
-        )
-
-
-def print_workflow_banner(script: str, reference: str, backend: str | None = None, **extra) -> None:
+def print_workflow_banner(script: str, reference: str | None = None, backend: str | None = None, **extra) -> None:
     """Print a short resolved-settings banner so the run mode is obvious."""
-    lines = [
-        f"[workflow] reference={reference}  (wavefunction / energy used as truth)",
-    ]
-    if script == "optimize":
+    lines = []
+    if reference is not None:
+        lines.append(
+            f"[workflow] reference={reference}  (wavefunction / energy used as truth)"
+        )
+    if script == "optimize" and reference is not None:
         engine = backend or optimize_cost_engine(reference)
         lines.append(f"[workflow] cost_engine={engine}  (from --reference)")
-    elif backend is not None:
+    elif script == "metrics" and backend is not None:
         lines.append(f"[workflow] backend={backend}  (sector solver)")
     for key, value in extra.items():
         if value is not None:
             lines.append(f"[workflow] {key}={value}")
-    print("\n".join(lines), flush=True)
+    if lines:
+        print("\n".join(lines), flush=True)
 
 
 def _attach_epilog(parser: argparse.ArgumentParser, epilog: str) -> None:

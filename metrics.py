@@ -32,7 +32,6 @@ from src.sector_utils import subspace_matrix, symmetry_sectors
 from src.workflow_cli import (
     add_metrics_workflow_args,
     print_workflow_banner,
-    validate_metrics_workflow,
 )
 from src.clifford_sectors import (
     build_clifford_frame,
@@ -284,7 +283,6 @@ def _run_dmrg_from_oo_json(input_data, args, outname, out_data):
 
     out_data["backend"] = "dmrg"
     out_data["solver"] = "dmrg"  # alias for older consumers
-    out_data["reference"] = "dmrg"
     out_data["solve_time_s"] = float(solve_time_s)
     out_data["report_lines"] = lines
     out_data["E_FCI"] = report.e_reference
@@ -563,7 +561,7 @@ def run_clifford_metrics(args, input_data, out_data):
     timings["solve_sectors"] = time.time() - stage_start
 
     stage_start = time.time()
-    exact_energy, fci_vector = get_fci(dumpdata)
+    exact_energy, _ = get_fci(dumpdata)
     timings["solve_parent_fci"] = time.time() - stage_start
 
     decoupled_energy = min(
@@ -599,25 +597,33 @@ def run_clifford_metrics(args, input_data, out_data):
         timings["assemble_coupled_hamiltonian"] = time.time() - stage_start
 
         stage_start = time.time()
-        rotated_fci_vector = ffsim.apply_orbital_rotation(
-            fci_vector,
-            rotation,
-            norb=moldata.norb,
-            nelec=moldata.nelec,
-        )
-        jw_reference = ci_vector_to_jw_state(
-            rotated_fci_vector,
-            moldata.norb,
-            moldata.nelec,
-        )
-        transformed_reference = frame["clifford"].transform_state(jw_reference)
-        reference_weights = candidate_reference_weights(
-            frame,
-            candidates,
-            transformed_reference,
-        )
-
         if args.coupled_energy_method == "reference":
+            from src.dmrg_solver import DMRGConfig, get_dmrg_reference
+
+            _, overlap_vec = get_dmrg_reference(
+                dumpdata,
+                store_dir=args.wavefunction_dir,
+                config=DMRGConfig(max_bond_dim=args.bond_dim),
+                n_threads=args.n_threads,
+                reuse=True,
+            )
+            rotated_overlap = ffsim.apply_orbital_rotation(
+                overlap_vec,
+                rotation,
+                norb=moldata.norb,
+                nelec=moldata.nelec,
+            )
+            jw_reference = ci_vector_to_jw_state(
+                rotated_overlap,
+                moldata.norb,
+                moldata.nelec,
+            )
+            transformed_reference = frame["clifford"].transform_state(jw_reference)
+            reference_weights = candidate_reference_weights(
+                frame,
+                candidates,
+                transformed_reference,
+            )
             order = reference_candidate_order(reference_weights)
             curve = coupled_energy_curve(
                 h_coupled,
@@ -625,6 +631,7 @@ def run_clifford_metrics(args, input_data, out_data):
                 exact_energy=exact_energy,
                 tolerance=CHEMICAL_PRECISION,
             )
+            out_data["overlap_reference"] = "dmrg"
         else:
             curve = perturbative_coupled_energy_curve(
                 h_coupled,
@@ -728,8 +735,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description=(
             "Sector metrics (E_decoupled, K) from an OO JSON. "
-            "Use --reference for the comparison energy/state and --backend "
-            "for the sector eigensolver (see --help epilog for valid combinations)."
+            "Use --backend for the sector eigensolver; "
+            "--coupled_energy_method reference uses a DMRG wavefunction for "
+            "overlap ordering (PT needs no overlap reference). "
+            "See --help epilog."
         ),
     )
     parser.add_argument(
@@ -808,19 +817,24 @@ if __name__ == "__main__":
     parser.add_argument(
         "--coupled_energy_method",
         choices=("reference", "perturbation"),
-        default="reference",
-        help="K_coupled selection: reference-overlap ordering (reference) or "
-             "one-shot PT ordering (perturbation), both with nested variational "
-             "search. DMRG uses one-shot PT.",
+        default="perturbation",
+        help="K selection on CI backends: perturbation=one-shot PT (default, "
+             "no overlap wavefunction); reference=overlap ordering vs a DMRG "
+             "wavefunction. --backend dmrg always uses PT.",
     )
     args = parser.parse_args()
-    validate_metrics_workflow(parser, args)
     print_workflow_banner(
         "metrics",
-        args.reference,
-        args.backend,
-        bond_dim=args.bond_dim if args.backend == "dmrg" or args.reference == "dmrg" else None,
+        backend=args.backend,
+        bond_dim=(
+            args.bond_dim
+            if args.backend == "dmrg" or args.coupled_energy_method == "reference"
+            else None
+        ),
         sector_backend=args.sector_backend,
+        coupled_energy_method=(
+            args.coupled_energy_method if args.backend != "dmrg" else "perturbation"
+        ),
     )
 
     with open(args.input_data, "r") as fp:
@@ -868,28 +882,12 @@ if __name__ == "__main__":
         rotated_h, norb=moldata.norb, nelec=moldata.nelec
     )
 
-    if args.reference == "dmrg":
-        from src.dmrg_solver import DMRGConfig, get_dmrg_reference
-
-        e_ref, refvec = get_dmrg_reference(
-            dumpdata,
-            store_dir=args.wavefunction_dir,
-            config=DMRGConfig(max_bond_dim=args.bond_dim),
-            n_threads=args.n_threads,
-            reuse=True,
-        )
-        print("DMRG reference ", e_ref)
-    else:
-        e_ref, refvec = get_fci(dumpdata)
-        print("FCI ", e_ref)
+    e_ref, _ = get_fci(dumpdata)
+    print("FCI ", e_ref)
 
     out_data["backend"] = args.backend
     out_data["solver"] = args.backend  # alias for older consumers
-    out_data["reference"] = args.reference
     out_data["E_FCI"] = e_ref
-    rotated_fcivec = ffsim.apply_orbital_rotation(
-        refvec, U, norb=moldata.norb, nelec=moldata.nelec
-    )
 
     print("qty of sectors ", len(sectors.keys()))
 
@@ -973,7 +971,20 @@ if __name__ == "__main__":
             print("PT coupled-energy did not converge within chemical precision")
 
     elif args.coupled_energy_method == "reference":
-        print("Calculating K directly from reference wavefunction")
+        print("Calculating K via overlap ordering against DMRG wavefunction")
+        from src.dmrg_solver import DMRGConfig, get_dmrg_reference
+
+        _, refvec = get_dmrg_reference(
+            dumpdata,
+            store_dir=args.wavefunction_dir,
+            config=DMRGConfig(max_bond_dim=args.bond_dim),
+            n_threads=args.n_threads,
+            reuse=True,
+        )
+        rotated_refvec = ffsim.apply_orbital_rotation(
+            refvec, U, norb=moldata.norb, nelec=moldata.nelec
+        )
+        out_data["overlap_reference"] = "dmrg"
 
         full_space_vectors = []
         for k, v in sectors.items():
@@ -988,7 +999,7 @@ if __name__ == "__main__":
         k_min, e_coupled, converged, weights_order = reference_coupled_energy_k(
             h_apply,
             full_space_vectors_cat,
-            rotated_fcivec,
+            rotated_refvec,
             e_ref,
             chemical_precision=CHEMICAL_PRECISION,
         )
