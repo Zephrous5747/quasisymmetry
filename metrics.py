@@ -592,9 +592,9 @@ if __name__ == "__main__":
         "--coupled_energy_method",
         choices=("reference", "perturbation"),
         default="reference",
-        help="K_coupled selection: FCI-coefficient greedy (reference) or "
-             "PT-screened greedy (perturbation). Ignored for --solver dmrg "
-             "(always PT-screened).",
+        help="K_coupled selection: reference-overlap ordering (reference) or "
+             "one-shot PT ordering (perturbation), both with nested variational "
+             "search. DMRG uses one-shot PT.",
     )
     args = parser.parse_args()
 
@@ -697,7 +697,6 @@ if __name__ == "__main__":
             sector_data,
             e_exact=e_fci,
             tol=CHEMICAL_PRECISION,
-            method="one_shot",
         )
         print("E_coupled", e_coupled)
         print("K", k_coupled)

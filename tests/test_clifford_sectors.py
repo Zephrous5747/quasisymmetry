@@ -83,8 +83,9 @@ def test_perturbative_curve_stops_at_requested_accuracy():
     )
     assert curve["converged"]
     assert curve["K"] == 2
-    assert len(curve["order"]) == 2
     assert len(curve["energies"]) == 2
+    assert len(curve["order"]) >= 2
+    assert curve["order"][:2] == curve["order"][: curve["K"]]
 
 
 def test_fixed_particle_basis_mapping_matches_clifford_state_action():

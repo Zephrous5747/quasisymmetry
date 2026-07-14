@@ -1,4 +1,4 @@
-"""Sanity checks for PT coupled-energy / coupled-dimension diagnostics."""
+"""Sanity checks for PT / reference coupled-dimension diagnostics."""
 
 from __future__ import annotations
 
@@ -12,20 +12,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.coupled_energy_core import (
     all_sector_eigenpair_candidates,
-    augment_h_proj,
+    build_candidate_hamiltonian,
     find_k_epsilon,
-    h_cols_from_h_vecs,
     k_pt_from_ordered_weights,
+    nested_ground_energy,
     one_shot_coupled_energy,
+    one_shot_from_hamiltonian,
     one_shot_pt_order,
     one_shot_pt_weight,
-    projected_ground_energy_dense,
-    trial_ground_energy_incremental,
+    reference_coupled_energy,
 )
 from src.energy_diagnostics import (
     coupled_energy_perturbation,
     decoupled_energy_test,
     diagonalize_sector_blocks,
+    reference_coupled_energy_k,
 )
 
 
@@ -83,21 +84,30 @@ class CoupledEnergySanityTests(unittest.TestCase):
         block_indices = {idx for _key, idx in keys}
         self.assertIn(1, block_indices)
 
-    def test_greedy_still_available(self):
+    def test_reference_overlap_matches_exact_on_toy(self):
         h, _sectors, sector_data, e_exact = _toy_hamiltonian_and_sectors()
-        e_pt, k_pt, converged, _ = coupled_energy_perturbation(
-            lambda v: h @ v,
-            sector_data,
-            e_exact=e_exact,
-            tol=1e-10,
-            method="greedy",
+        candidates = all_sector_eigenpair_candidates(sector_data)
+        # Exact ground state as reference.
+        _evals, evecs = np.linalg.eigh(0.5 * (h + h.conj().T))
+        psi_ref = evecs[:, 0]
+        result = reference_coupled_energy(
+            candidates, lambda v: h @ v, psi_ref, e_exact=e_exact, tol=1e-10
+        )
+        self.assertTrue(result.converged)
+        self.assertAlmostEqual(result.e_coupled, e_exact, places=10)
+        self.assertGreaterEqual(result.K, 2)
+
+        vecs = np.column_stack([c[2] for c in candidates])
+        k_min, e_coupled, converged, order = reference_coupled_energy_k(
+            lambda v: h @ v, vecs, psi_ref, e_exact, chemical_precision=1e-10
         )
         self.assertTrue(converged)
-        self.assertAlmostEqual(e_pt, e_exact, places=10)
-        self.assertGreaterEqual(k_pt, 2)
+        self.assertEqual(k_min, result.K)
+        self.assertAlmostEqual(e_coupled, e_exact, places=10)
+        self.assertEqual(list(order[:k_min]), list(result.order_indices[:k_min]))
 
     def test_pt_ordering_ranks_coupled_state_first(self):
-        h, _sectors, sector_data, e_exact = _toy_hamiltonian_and_sectors()
+        h, _sectors, sector_data, _e_exact = _toy_hamiltonian_and_sectors()
         candidates = all_sector_eigenpair_candidates(sector_data)
         energies = [c[0] for c in candidates]
         ref = int(np.argmin(energies))
@@ -105,7 +115,6 @@ class CoupledEnergySanityTests(unittest.TestCase):
         couplings = [complex(np.vdot(c[2], h_ref)) for c in candidates]
         order, weights = one_shot_pt_order(energies, couplings, ref)
         self.assertEqual(order[0], ref)
-        # First external should be the uniquely coupled partner (sector B, root 0).
         first_ext = order[1]
         self.assertGreater(weights[first_ext], 0.0)
         for index in order[2:]:
@@ -116,7 +125,6 @@ class CoupledEnergySanityTests(unittest.TestCase):
         self.assertEqual(k_pt_from_ordered_weights(weights, tau_pt=0.1), 3)
         self.assertEqual(k_pt_from_ordered_weights(weights, tau_pt=2.0), 1)
 
-        # Nested 3-state problem: exact GS needs both couplings.
         h_ord = np.asarray(
             [
                 [0.0, 0.2, 0.0],
@@ -136,6 +144,10 @@ class CoupledEnergySanityTests(unittest.TestCase):
         self.assertLessEqual(energies[2], energies[1] + 1e-12)
         self.assertAlmostEqual(energies[-1], e_ref, places=10)
 
+        curve = one_shot_from_hamiltonian(h_ord, e_exact=e_ref, tol=0.01).as_curve()
+        self.assertTrue(curve["converged"])
+        self.assertEqual(curve["K"], 2)
+
     def test_degenerate_coupling_gets_infinite_weight(self):
         self.assertEqual(one_shot_pt_weight(0.1, 0.0), float("inf"))
         self.assertEqual(one_shot_pt_weight(0.0, 0.0), 0.0)
@@ -152,26 +164,26 @@ class CoupledEnergySanityTests(unittest.TestCase):
         self.assertAlmostEqual(result.e_coupled, e_exact, places=10)
         self.assertEqual(len(result.chosen_keys), result.K)
 
-    def test_incremental_matches_dense_projection(self):
-        h, _sectors, sector_data, e_exact = _toy_hamiltonian_and_sectors()
-        candidates = all_sector_eigenpair_candidates(sector_data)
-        vecs = [candidates[i][2] for i in range(3)]
-        e_dense = projected_ground_energy_dense(h, vecs)
-        h_vecs = [h @ v for v in vecs[:2]]
-        h_cols = h_cols_from_h_vecs(h_vecs, vecs[2])
-        e0 = float(np.real(np.vdot(vecs[0], h @ vecs[0])))
-        e1 = float(np.real(np.vdot(vecs[1], h @ vecs[1])))
-        e2 = float(np.real(np.vdot(vecs[2], h @ vecs[2])))
-        h_proj = np.array([[e0]], dtype=np.complex128)
-        h_proj = augment_h_proj(h_proj, [complex(np.vdot(h @ vecs[0], vecs[1]))], e1)
-        e_incr = trial_ground_energy_incremental(
-            h_proj, h_cols, e2
+    def test_build_candidate_hamiltonian_matches_projection(self):
+        h, _sectors, sector_data, _e_exact = _toy_hamiltonian_and_sectors()
+        candidates = all_sector_eigenpair_candidates(sector_data)[:3]
+        h_c = build_candidate_hamiltonian(candidates, lambda v: h @ v)
+        vecs = np.column_stack([c[2] for c in candidates])
+        h_proj = vecs.conj().T @ h @ vecs
+        h_proj = 0.5 * (h_proj + h_proj.conj().T)
+        self.assertTrue(np.allclose(h_c, h_proj, atol=1e-12))
+        self.assertAlmostEqual(
+            nested_ground_energy(h_c, 3),
+            float(np.linalg.eigvalsh(h_proj)[0]),
+            places=10,
         )
-        self.assertAlmostEqual(e_incr, e_dense, places=10)
 
     def test_decoupled_energy(self):
         h, sectors, sector_data, e_exact = _toy_hamiltonian_and_sectors()
-        sector_gs_pairs = {k: (d["evals"], np.column_stack(d["evecs_full"])) for k, d in sector_data.items()}
+        sector_gs_pairs = {
+            k: (d["evals"], np.column_stack(d["evecs_full"]))
+            for k, d in sector_data.items()
+        }
         e_dec, best_key, _dim = decoupled_energy_test(sectors, sector_gs_pairs)
         self.assertAlmostEqual(e_dec, 0.0, places=10)
         self.assertEqual(best_key, "A")
