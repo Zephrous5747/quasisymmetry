@@ -7,3 +7,17 @@ __pycache__/
 outputs_/
 *.~lock*
 wavefunctions/
+
+# Local Fir/Alliance repro scripts + runs (own mini-repo)
+cluster_tests/
+
+scripts/
+
+# Local venv / Alliance setup (do not publish)
+setup_venv.sh
+setup_venv.ps1
+requirements.txt
+requirements-mpi.txt
+requirements-alliance.txt
+.gitattributes
+.venv/

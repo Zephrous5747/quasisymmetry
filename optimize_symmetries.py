@@ -67,8 +67,17 @@ from src.workflow_cli import (
     add_optimize_workflow_args,
     optimize_cost_engine,
     print_workflow_banner,
+    resolve_select_n_sym,
+    validate_greedy_cli_args,
 )
 from src.orbital_rotation import n_params, params_to_U, resolve_orbital_rotation
+from src.greedy_selection import (
+    default_parity_output_path,
+    select_from_pool,
+    select_senquart_quota,
+    write_parity_matrix,
+)
+from src.iterative_pool import select_iterative_pool
 
 
 def commutator_cost(moldata: ffsim.MolecularData,
@@ -593,16 +602,42 @@ if __name__=="__main__":
                         help="save rotated orbital energies (h1e diagonal) to this .npy file")
 
     args = parser.parse_args()
+    try:
+        validate_greedy_cli_args(
+            select=args.select,
+            n_sym=args.n_sym,
+            cost_function=args.cost_function,
+            parity=args.parity,
+            seniority=args.seniority,
+            symmetry_manifest=args.symmetry_manifest,
+            m_round=args.m_round,
+            n_singles=args.n_singles,
+            n_quartets=args.n_quartets,
+            candidates=args.candidates,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    args.n_sym = resolve_select_n_sym(
+        select=args.select,
+        n_sym=args.n_sym,
+        n_singles=args.n_singles,
+        n_quartets=args.n_quartets,
+    )
+
     print_workflow_banner(
         "optimize",
         args.reference,
         cost_function=args.cost_function,
         bond_dim=args.bond_dim if args.reference == "dmrg" else None,
         orbital_rotation=args.orbital_rotation,
+        select=args.select if args.select != "none" else None,
     )
 
     rotation_pairs = None
     rotation_irreps = None
+    selection_meta = None
+    iterative_res = None
 
     # ── MPS-native path (--reference dmrg; NC / variance only) ────────────────
     if args.reference == "dmrg":
@@ -620,35 +655,207 @@ if __name__=="__main__":
             )
         if args.seniority:
             parser.error("--reference dmrg requires a parity matrix (not --seniority)")
-        if args.parity is None:
-            parser.error("--reference dmrg requires a parity matrix file")
+        if args.select == "none" and args.parity is None:
+            parser.error(
+                "--reference dmrg requires a parity matrix file "
+                "or --select greedy|iterative"
+            )
         if args.orbene_npy is not None:
             parser.error("--orbene_npy is not supported with --reference dmrg")
 
-        parity_matrix = np.atleast_2d(np.loadtxt(args.parity, dtype=int))
         store_dir = args.wavefunction_dir
         if store_dir is None:
             store_dir = str(Path("wavefunctions") / Path(args.molpath).stem)
 
-        costs, dmrg_result, solver = build_dmrg_orbital_costs(
-            args.molpath,
-            parity_matrix,
-            store_dir=store_dir,
-            config=DMRGConfig(
-                max_bond_dim=args.bond_dim,
-                n_sweeps=max(12, args.bond_dim // 20 + 8),
-            ),
-            multiply=MultiplyConfig(
-                bond_dim=args.multiply_bond_dim,
-                n_sweeps=args.multiply_sweeps,
-            ),
-            reuse=True,
-            n_threads=args.n_threads,
-        )
-        rotation_pairs, rotation_irreps = resolve_orbital_rotation(
-            args.orbital_rotation, args.molpath, solver.n_sites
-        )
-        costs.pairs = rotation_pairs
+        if args.select in ("greedy", "iterative"):
+            placeholder = np.ones((1, 1), dtype=int)
+            costs, dmrg_result, solver = build_dmrg_orbital_costs(
+                args.molpath,
+                placeholder,
+                store_dir=store_dir,
+                config=DMRGConfig(
+                    max_bond_dim=args.bond_dim,
+                    n_sweeps=max(12, args.bond_dim // 20 + 8),
+                ),
+                multiply=MultiplyConfig(
+                    bond_dim=args.multiply_bond_dim,
+                    n_sweeps=args.multiply_sweeps,
+                ),
+                reuse=True,
+                n_threads=args.n_threads,
+            )
+            rotation_pairs, rotation_irreps = resolve_orbital_rotation(
+                args.orbital_rotation, args.molpath, solver.n_sites
+            )
+            costs.pairs = rotation_pairs
+            x0_sel = (
+                np.loadtxt(args.x0)
+                if args.x0
+                else np.zeros(n_params(solver.n_sites, rotation_pairs))
+            )
+
+            def _score_row(row: np.ndarray) -> float:
+                costs.parity_matrix = np.atleast_2d(np.asarray(row, dtype=int))
+                return float(costs.cost_function(args.cost_function)(x0_sel))
+
+            def _score_row_at(
+                row: np.ndarray,
+                parameters: np.ndarray | None,
+            ) -> float:
+                if parameters is None:
+                    raise RuntimeError(
+                        "iterative scoring requires orbital parameters"
+                    )
+                costs.parity_matrix = np.atleast_2d(np.asarray(row, dtype=int))
+                return float(costs.cost_function(args.cost_function)(parameters))
+
+            if args.select == "greedy":
+                if args.n_singles is not None and args.n_quartets is not None:
+                    print(
+                        f"[select greedy] quota senquart "
+                        f"(n_singles={args.n_singles}, "
+                        f"n_quartets={args.n_quartets}, "
+                        f"cost={args.cost_function})"
+                    )
+                    selection = select_senquart_quota(
+                        solver.n_sites,
+                        _score_row,
+                        int(args.n_singles),
+                        int(args.n_quartets),
+                    )
+                else:
+                    print(
+                        f"[select greedy] scoring {args.candidates} pool "
+                        f"(n_sym={args.n_sym}, cost={args.cost_function})"
+                    )
+                    selection = select_from_pool(
+                        solver.n_sites,
+                        args.n_sym,
+                        _score_row,
+                        candidates=args.candidates,
+                    )
+                parity_matrix = selection.parity_matrix
+                selected_costs = selection.selected_costs
+                selection_meta = selection.metadata(
+                    candidates=args.candidates,
+                    cost_function=args.cost_function,
+                    parity_output="",
+                )
+            else:
+                print(
+                    f"[select iterative] GF(2) pool extension "
+                    f"(n_sym={args.n_sym}, m_round={args.m_round}, "
+                    f"cost={args.cost_function})"
+                )
+                round_results = []
+
+                def _optimize_pool(
+                    accumulated_parity: np.ndarray,
+                    parameters: np.ndarray | None,
+                    round_index: int,
+                ):
+                    if parameters is None:
+                        raise RuntimeError(
+                            "iterative optimization requires initial x"
+                        )
+                    costs.parity_matrix = accumulated_parity
+                    objective = costs.cost_function(args.cost_function)
+                    before = float(objective(parameters))
+                    print(
+                        f"[select iterative] round {round_index + 1}: "
+                        f"optimizing {len(accumulated_parity)} generators "
+                        f"from cost {before:.8g}"
+                    )
+                    started = time.time()
+                    result = scipy.optimize.minimize(
+                        objective,
+                        parameters,
+                        method="L-BFGS-B",
+                        options={"maxiter": args.optimizer_maxiter},
+                        callback=callback if args.verbose else None,
+                    )
+                    round_results.append(result)
+                    elapsed_round = time.time() - started
+                    print(
+                        f"[select iterative] round {round_index + 1}: "
+                        f"optimized cost {float(result.fun):.8g}"
+                    )
+                    return np.asarray(result.x, dtype=float), {
+                        "cost_before": before,
+                        "cost_after": float(result.fun),
+                        "parameters_before": np.asarray(
+                            parameters, dtype=float
+                        ).tolist(),
+                        "parameters_after": np.asarray(
+                            result.x, dtype=float
+                        ).tolist(),
+                        "converged": bool(result.success),
+                        "nit": int(getattr(result, "nit", 0)),
+                        "nfev": int(getattr(result, "nfev", 0)),
+                        "elapsed": float(elapsed_round),
+                        "message": str(result.message),
+                    }
+
+                selection = select_iterative_pool(
+                    solver.n_sites,
+                    args.n_sym,
+                    _score_row,
+                    m_round=args.m_round,
+                    score_row_at=_score_row_at,
+                    optimize_pool=_optimize_pool,
+                    initial_parameters=x0_sel,
+                )
+                iterative_res = round_results[-1]
+                parity_matrix = selection.parity_matrix
+                selected_costs = selection.selected_costs
+                selection_meta = selection.metadata(
+                    cost_function=args.cost_function,
+                    parity_output="",
+                    m_round=args.m_round,
+                )
+            parity_out = args.parity_output or default_parity_output_path(
+                args.outname, select=args.select
+            )
+            parity_out = write_parity_matrix(parity_out, parity_matrix)
+            selection_meta["parity_output"] = parity_out
+            print(f"[select {args.select}] wrote parity matrix to {parity_out}")
+            print(
+                f"[select {args.select}] selected_costs="
+                f"{np.round(selected_costs, 6).tolist()}"
+            )
+            costs.parity_matrix = parity_matrix
+            x0 = (
+                np.asarray(selection.optimized_parameters, dtype=float)
+                if args.select == "iterative"
+                else x0_sel
+            )
+        else:
+            parity_matrix = np.atleast_2d(np.loadtxt(args.parity, dtype=int))
+            costs, dmrg_result, solver = build_dmrg_orbital_costs(
+                args.molpath,
+                parity_matrix,
+                store_dir=store_dir,
+                config=DMRGConfig(
+                    max_bond_dim=args.bond_dim,
+                    n_sweeps=max(12, args.bond_dim // 20 + 8),
+                ),
+                multiply=MultiplyConfig(
+                    bond_dim=args.multiply_bond_dim,
+                    n_sweeps=args.multiply_sweeps,
+                ),
+                reuse=True,
+                n_threads=args.n_threads,
+            )
+            rotation_pairs, rotation_irreps = resolve_orbital_rotation(
+                args.orbital_rotation, args.molpath, solver.n_sites
+            )
+            costs.pairs = rotation_pairs
+            x0 = (
+                np.loadtxt(args.x0)
+                if args.x0
+                else np.zeros(n_params(solver.n_sites, rotation_pairs))
+            )
+
         n_free = n_params(solver.n_sites, None)
         n_sym = n_params(solver.n_sites, rotation_pairs)
         print(
@@ -660,16 +867,24 @@ if __name__=="__main__":
         print("wavefunction store: {}".format(dmrg_result.store_dir))
 
         f = costs.cost_function(args.cost_function)
-        x0 = (
-            np.loadtxt(args.x0)
-            if args.x0
-            else np.zeros(n_params(solver.n_sites, rotation_pairs))
-        )
-        cost_before = f(x0)
-        print("before optimization: {0:4.6f}".format(cost_before))
+        if iterative_res is None:
+            cost_before = f(x0)
+            print("before optimization: {0:4.6f}".format(cost_before))
+        else:
+            cost_before = float(
+                selection.history["rounds"][0]["optimization"]["cost_before"]
+            )
 
         t_start = time.time()
-        if args.optimizer_maxiter > 0:
+        if iterative_res is not None:
+            res = iterative_res
+            elapsed = sum(
+                float(round_record["optimization"].get("elapsed", 0.0))
+                for round_record in selection.history["rounds"]
+            )
+            print("iterative final:", res.message)
+            print("optimized: {0:4.6f}".format(res.fun))
+        elif args.optimizer_maxiter > 0:
             res = scipy.optimize.minimize(
                 f,
                 x0,
@@ -729,6 +944,8 @@ if __name__=="__main__":
         }
         if rotation_irreps is not None:
             out_data["irreps"] = np.asarray(rotation_irreps, dtype=int).tolist()
+        if selection_meta is not None:
+            out_data.update(selection_meta)
         with open(outname, "a") as fp:
             json.dump(vars(args) | out_data, fp, indent=2)
         print("results written to", outname)
@@ -755,13 +972,193 @@ if __name__=="__main__":
         + (f", reduced={n_free - n_sym}" if rotation_pairs is not None else "")
     )
 
+    # ── reference state (CI / ffsim path) ─────────────────────────────────────
+    if args.reference == "fci":
+        _, state = get_fci(dumpdata)
+    elif args.reference == "hf":
+        state = ffsim.hartree_fock_state(moldata.norb, moldata.nelec)
+    else:
+        raise ValueError("reference must be fci or hf on the CI path")
+    # Wrap as callable; optimize_fcidump will call reference_fn(moldata) internally.
+    # Using a lambda that returns the already-computed state avoids running the
+    # solver a second time.
+    reference_fn = lambda md: state
+
+    x0 = (
+        np.loadtxt(args.x0)
+        if args.x0
+        else np.zeros(n_params(moldata.norb, rotation_pairs))
+    )
+
     # ── symmetries ────────────────────────────────────────────────────────────
     symmetry_manifest = (
         load_symmetry_manifest(args.symmetry_manifest)
         if args.symmetry_manifest
         else None
     )
-    if args.seniority:
+    if args.select in ("greedy", "iterative"):
+        def _score_row(row: np.ndarray) -> float:
+            ops = parity_matrix_to_quasisymmetries(
+                np.atleast_2d(np.asarray(row, dtype=int)),
+                moldata.norb,
+                moldata.nelec,
+            )
+            if args.cost_function == "NC":
+                return float(commutator_cost(moldata, ops, state, pairs=rotation_pairs)(x0))
+            return float(variance_cost(moldata, ops, state, pairs=rotation_pairs)(x0))
+
+        def _score_row_at(
+            row: np.ndarray,
+            parameters: np.ndarray | None,
+        ) -> float:
+            if parameters is None:
+                raise RuntimeError("iterative scoring requires orbital parameters")
+            ops = parity_matrix_to_quasisymmetries(
+                np.atleast_2d(np.asarray(row, dtype=int)),
+                moldata.norb,
+                moldata.nelec,
+            )
+            if args.cost_function == "NC":
+                objective = commutator_cost(
+                    moldata, ops, state, pairs=rotation_pairs
+                )
+            else:
+                objective = variance_cost(
+                    moldata, ops, state, pairs=rotation_pairs
+                )
+            return float(objective(parameters))
+
+        if args.select == "greedy":
+            if args.n_singles is not None and args.n_quartets is not None:
+                print(
+                    f"[select greedy] quota senquart "
+                    f"(n_singles={args.n_singles}, "
+                    f"n_quartets={args.n_quartets}, "
+                    f"cost={args.cost_function})"
+                )
+                selection = select_senquart_quota(
+                    moldata.norb,
+                    _score_row,
+                    int(args.n_singles),
+                    int(args.n_quartets),
+                )
+            else:
+                print(
+                    f"[select greedy] scoring {args.candidates} pool "
+                    f"(n_sym={args.n_sym}, cost={args.cost_function})"
+                )
+                selection = select_from_pool(
+                    moldata.norb,
+                    args.n_sym,
+                    _score_row,
+                    candidates=args.candidates,
+                )
+            parity_matrix = selection.parity_matrix
+            selected_costs = selection.selected_costs
+            selection_meta = selection.metadata(
+                candidates=args.candidates,
+                cost_function=args.cost_function,
+                parity_output="",
+            )
+        else:
+            print(
+                f"[select iterative] GF(2) pool extension "
+                f"(n_sym={args.n_sym}, m_round={args.m_round}, "
+                f"cost={args.cost_function})"
+            )
+            round_results = []
+
+            def _optimize_pool(
+                accumulated_parity: np.ndarray,
+                parameters: np.ndarray | None,
+                round_index: int,
+            ):
+                if parameters is None:
+                    raise RuntimeError(
+                        "iterative optimization requires initial x"
+                    )
+                operators = parity_matrix_to_quasisymmetries(
+                    accumulated_parity,
+                    moldata.norb,
+                    moldata.nelec,
+                )
+                if args.cost_function == "NC":
+                    objective = commutator_cost(
+                        moldata, operators, state, pairs=rotation_pairs
+                    )
+                else:
+                    objective = variance_cost(
+                        moldata, operators, state, pairs=rotation_pairs
+                    )
+                before = float(objective(parameters))
+                print(
+                    f"[select iterative] round {round_index + 1}: "
+                    f"optimizing {len(accumulated_parity)} generators "
+                    f"from cost {before:.8g}"
+                )
+                started = time.time()
+                result = scipy.optimize.minimize(
+                    objective,
+                    parameters,
+                    method="L-BFGS-B",
+                    options={"maxiter": args.optimizer_maxiter},
+                    callback=callback if args.verbose else None,
+                )
+                round_results.append(result)
+                elapsed_round = time.time() - started
+                print(
+                    f"[select iterative] round {round_index + 1}: "
+                    f"optimized cost {float(result.fun):.8g}"
+                )
+                return np.asarray(result.x, dtype=float), {
+                    "cost_before": before,
+                    "cost_after": float(result.fun),
+                    "parameters_before": np.asarray(
+                        parameters, dtype=float
+                    ).tolist(),
+                    "parameters_after": np.asarray(
+                        result.x, dtype=float
+                    ).tolist(),
+                    "converged": bool(result.success),
+                    "nit": int(getattr(result, "nit", 0)),
+                    "nfev": int(getattr(result, "nfev", 0)),
+                    "elapsed": float(elapsed_round),
+                    "message": str(result.message),
+                }
+
+            selection = select_iterative_pool(
+                moldata.norb,
+                args.n_sym,
+                _score_row,
+                m_round=args.m_round,
+                score_row_at=_score_row_at,
+                optimize_pool=_optimize_pool,
+                initial_parameters=x0,
+            )
+            iterative_res = round_results[-1]
+            x0 = np.asarray(selection.optimized_parameters, dtype=float)
+            parity_matrix = selection.parity_matrix
+            selected_costs = selection.selected_costs
+            selection_meta = selection.metadata(
+                cost_function=args.cost_function,
+                parity_output="",
+                m_round=args.m_round,
+            )
+        parity_out = args.parity_output or default_parity_output_path(
+            args.outname, select=args.select
+        )
+        parity_out = write_parity_matrix(parity_out, parity_matrix)
+        selection_meta["parity_output"] = parity_out
+        print(f"[select {args.select}] wrote parity matrix to {parity_out}")
+        print(
+            f"[select {args.select}] selected_costs="
+            f"{np.round(selected_costs, 6).tolist()}"
+        )
+        symmetry_op = parity_matrix_to_quasisymmetries(
+            parity_matrix, moldata.norb, moldata.nelec
+        )
+        sym_linops = symmetry_op
+    elif args.seniority:
         sym_of = of.FermionOperator()
         for p in range(moldata.norb):
             # local seniority operator: n_{p,alpha} + n_{p,beta} - 2 n_{p,alpha} n_{p,beta}
@@ -799,24 +1196,7 @@ if __name__=="__main__":
                 parity_matrix, moldata.norb
             )
 
-    # ── reference state (CI / ffsim path) ─────────────────────────────────────
-    if args.reference == "fci":
-        _, state = get_fci(dumpdata)
-    elif args.reference == "hf":
-        state = ffsim.hartree_fock_state(moldata.norb, moldata.nelec)
-    else:
-        raise ValueError("reference must be fci or hf on the CI path")
-    # Wrap as callable; optimize_fcidump will call reference_fn(moldata) internally.
-    # Using a lambda that returns the already-computed state avoids running the
-    # solver a second time.
-    reference_fn = lambda md: state
-
     # ── cost before optimization ──────────────────────────────────────────────
-    x0 = (
-        np.loadtxt(args.x0)
-        if args.x0
-        else np.zeros(n_params(moldata.norb, rotation_pairs))
-    )
     switching_history = None
 
     if args.cost_function == "NC":
@@ -888,12 +1268,41 @@ if __name__=="__main__":
     else:
         raise ValueError("unknown cost function")
 
-    cost_before = initial_energy if args.cost_function == "switching_sector" else f(x0)
-    print("before optimization: {0:4.6f}".format(cost_before))
+    if iterative_res is not None:
+        cost_before = float(
+            selection.history["rounds"][0]["optimization"]["cost_before"]
+        )
+    else:
+        cost_before = (
+            initial_energy if args.cost_function == "switching_sector" else f(x0)
+        )
+        print("before optimization: {0:4.6f}".format(cost_before))
 
     # ── optimise ──────────────────────────────────────────────────────────────
     t_start = time.time()
-    if args.optimizer_maxiter > 0:
+    if iterative_res is not None:
+        res = iterative_res
+        elapsed = sum(
+            float(round_record["optimization"]["elapsed"])
+            for round_record in selection.history["rounds"]
+        )
+        print("iterative final:", res.message)
+        print("optimized: {0:4.6f}".format(res.fun))
+        if args.output_fcidump is not None:
+            U_opt = x_to_rotation(res.x, moldata.norb, rotation_pairs)
+            rh = moldata.hamiltonian.rotated(U_opt)
+            ffsim.MolecularData(
+                atom=moldata.atom,
+                basis=moldata.basis,
+                spin=moldata.spin,
+                nelec=moldata.nelec,
+                hf_energy=moldata.hf_energy,
+                norb=moldata.norb,
+                core_energy=moldata.core_energy,
+                one_body_integrals=rh.one_body_tensor,
+                two_body_integrals=rh.two_body_tensor,
+            ).to_fcidump(args.output_fcidump)
+    elif args.optimizer_maxiter > 0:
         if args.cost_function in ("NC", "variance"):
             res = optimize_fcidump(
                 input_path=args.molpath,
@@ -996,6 +1405,8 @@ if __name__=="__main__":
     out_data["orbital_rotation"] = args.orbital_rotation
     if rotation_irreps is not None:
         out_data["irreps"] = np.asarray(rotation_irreps, dtype=int).tolist()
+    if selection_meta is not None:
+        out_data.update(selection_meta)
 
     full_output = vars(args) | out_data
 

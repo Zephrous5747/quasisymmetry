@@ -27,6 +27,11 @@ import argparse
 REFERENCE_CHOICES = ("fci", "hf", "dmrg")
 METRICS_BACKEND_CHOICES = ("fci", "dmrg", "davidson")
 ORBITAL_ROTATION_CHOICES = ("full", "irrep")
+SELECT_CHOICES = ("none", "greedy", "iterative")
+CANDIDATE_CHOICES = ("senquart", "seniority")
+GREEDY_COST_FUNCTIONS = ("NC", "variance")
+SECTOR_COST_FUNCTIONS = ("decoupled", "fixed_sector", "switching_sector")
+SELECT_POOL_MODES = ("greedy", "iterative")
 
 OPTIMIZE_EPILOG = """
 --reference picks both the wavefunction and the cost engine
@@ -43,12 +48,24 @@ OPTIMIZE_EPILOG = """
   --orbital_rotation full   SO(n), binom(n,2) angles (default)
   --orbital_rotation irrep  intra-irrep pairs only (needs --point_group chk)
 
+--select greedy|iterative
+-------------------------
+  Build an independent Z-type set of size --n_sym, then run OO on that parity
+  matrix. Only valid for --cost_function NC|variance. Omit the parity
+  positional when selecting.
+
+  greedy     one-shot Kruskal over {seniority, quartet} (--candidates)
+  iterative  repeat Kruskal selection, warm-started OO, and external Clifford
+             canonicalization (--m_round); may accumulate weight>2 pullbacks
+
 examples
 --------
   python optimize_symmetries.py mol.FCIDUMP parity.txt
   python optimize_symmetries.py mol.chk parity.txt --orbital_rotation irrep
   python optimize_symmetries.py mol.FCIDUMP parity.txt --reference hf
   python optimize_symmetries.py mol.FCIDUMP parity.txt --reference dmrg --bond_dim 250
+  python optimize_symmetries.py mol.chk --select greedy --n_sym 4 --cost_function NC
+  python optimize_symmetries.py mol.chk --select iterative --n_sym 4 --m_round 2
 """
 
 METRICS_EPILOG = """
@@ -111,6 +128,184 @@ def add_orbital_rotation_arg(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def add_greedy_select_args(parser: argparse.ArgumentParser) -> None:
+    """``--select greedy|iterative`` pool / cardinality / parity-output flags."""
+    parser.add_argument(
+        "--select",
+        choices=SELECT_CHOICES,
+        default="none",
+        metavar="{none,greedy,iterative}",
+        help=(
+            "Symmetry selection before OO: none=use provided parity/--seniority "
+            "(default); greedy=one-shot Kruskal over seniority/quartet candidates; "
+            "iterative=selection + warm-started OO + external Clifford frame "
+            "updates. Both use "
+            "the same NC or variance metric as --cost_function."
+        ),
+    )
+    parser.add_argument(
+        "--n_sym",
+        type=int,
+        default=None,
+        help="number of independent symmetries to select (--select greedy|iterative)",
+    )
+    parser.add_argument(
+        "--n_singles",
+        type=int,
+        default=None,
+        help=(
+            "seniority quota for --select greedy senquart selection "
+            "(with --n_quartets; n_sym defaults to their sum)"
+        ),
+    )
+    parser.add_argument(
+        "--n_quartets",
+        type=int,
+        default=None,
+        help=(
+            "quartet quota for --select greedy senquart selection "
+            "(with --n_singles; n_sym defaults to their sum)"
+        ),
+    )
+    parser.add_argument(
+        "--candidates",
+        choices=CANDIDATE_CHOICES,
+        default="senquart",
+        metavar="{senquart,seniority}",
+        help=(
+            "Candidate pool for --select greedy: senquart=seniorities+quartets "
+            "(default); seniority=local seniorities only. Ignored for iterative "
+            "(always senquart per GF(2) frame)."
+        ),
+    )
+    parser.add_argument(
+        "--m_round",
+        type=int,
+        default=2,
+        help="operators per GF(2) frame round (--select iterative; default 2)",
+    )
+    parser.add_argument(
+        "--parity_output",
+        default=None,
+        help=(
+            "write selected parity matrix here "
+            "(default: <outname>_parity.txt or parity_greedy.txt / parity_iterative.txt)"
+        ),
+    )
+    parser.add_argument(
+        "--results_csv",
+        default=None,
+        help=(
+            "append a locked summary row when OO finishes "
+            "(supports concurrent SLURM array writers)"
+        ),
+    )
+
+
+def resolve_select_n_sym(
+    *,
+    select: str,
+    n_sym: int | None,
+    n_singles: int | None = None,
+    n_quartets: int | None = None,
+) -> int | None:
+    """Resolve effective ``n_sym`` after optional greedy quotas."""
+    if select == "greedy" and n_sym is None and n_singles is not None and n_quartets is not None:
+        return int(n_singles) + int(n_quartets)
+    return n_sym
+
+
+def validate_greedy_cli_args(
+    *,
+    select: str,
+    n_sym: int | None,
+    cost_function: str,
+    parity: str | None = None,
+    seniority: bool = False,
+    symmetry_manifest: str | None = None,
+    m_round: int | None = None,
+    n_singles: int | None = None,
+    n_quartets: int | None = None,
+    candidates: str | None = None,
+) -> None:
+    """Raise ``ValueError`` when select / parity CLI combinations are invalid.
+
+    Callers typically wrap this with ``parser.error(str(exc))``.
+    """
+    if select in SELECT_POOL_MODES:
+        has_quota = n_singles is not None or n_quartets is not None
+        if has_quota:
+            if n_singles is None or n_quartets is None:
+                raise ValueError("--n_singles and --n_quartets must be set together")
+            if int(n_singles) < 0 or int(n_quartets) < 0:
+                raise ValueError("--n_singles and --n_quartets must be non-negative")
+            if int(n_singles) + int(n_quartets) <= 0:
+                raise ValueError("--n_singles + --n_quartets must be positive")
+            cand = (candidates or "senquart").lower()
+            if select == "greedy" and cand != "senquart":
+                raise ValueError(
+                    "quota selection (--n_singles/--n_quartets) requires "
+                    "--candidates senquart"
+                )
+            if select == "iterative" and n_sym is None:
+                raise ValueError(
+                    "--select iterative requires --n_sym "
+                    "(quotas apply only to greedy selection)"
+                )
+
+        effective_n_sym = resolve_select_n_sym(
+            select=select,
+            n_sym=n_sym,
+            n_singles=n_singles,
+            n_quartets=n_quartets,
+        )
+        if effective_n_sym is None:
+            if select == "greedy":
+                raise ValueError(
+                    "--select greedy requires --n_sym or both --n_singles and --n_quartets"
+                )
+            raise ValueError(f"--select {select} requires --n_sym")
+        if effective_n_sym <= 0:
+            raise ValueError(f"--n_sym must be positive, got {effective_n_sym}")
+        if (
+            has_quota
+            and select == "greedy"
+            and n_sym is not None
+            and int(n_sym) != int(n_singles) + int(n_quartets)
+        ):
+            raise ValueError(
+                f"--n_sym={n_sym} must equal --n_singles+--n_quartets="
+                f"{int(n_singles) + int(n_quartets)}"
+            )
+        if cost_function not in GREEDY_COST_FUNCTIONS:
+            raise ValueError(
+                f"--select {select} only supports --cost_function NC or variance "
+                f"(got {cost_function!r}); sector energy costs are not additive"
+            )
+        if seniority:
+            raise ValueError(
+                f"--select {select} is incompatible with --seniority; "
+                "use --candidates seniority (greedy) or omit --seniority"
+            )
+        if parity is not None:
+            raise ValueError(
+                f"--select {select} builds the parity matrix; omit the parity "
+                "positional argument (use --parity_output to save it)"
+            )
+        if select == "iterative":
+            round_val = 2 if m_round is None else int(m_round)
+            if round_val < 1:
+                raise ValueError(f"--m_round must be >= 1, got {round_val}")
+        return
+
+    # select == none: existing supply rules for optimize entry points
+    if parity is None and not seniority and symmetry_manifest is None:
+        raise ValueError(
+            "supply a parity matrix file, --seniority, --symmetry_manifest, "
+            "or --select greedy|iterative"
+        )
+
+
 def add_optimize_workflow_args(parser: argparse.ArgumentParser) -> None:
     """``--reference`` for ``optimize_symmetries.py`` (no ``--backend``)."""
     parser.add_argument(
@@ -127,6 +322,7 @@ def add_optimize_workflow_args(parser: argparse.ArgumentParser) -> None:
         ),
     )
     add_orbital_rotation_arg(parser)
+    add_greedy_select_args(parser)
     add_dmrg_common_args(parser)
     _attach_epilog(parser, OPTIMIZE_EPILOG)
 

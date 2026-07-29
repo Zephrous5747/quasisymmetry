@@ -33,6 +33,18 @@ Sector energy costs (`decoupled` / `fixed_sector` / `switching_sector`) need `--
 
 Irrep mode needs a symmetry-adapted Hamiltonian (`make_pyscf_hamiltonian.py --point_group …`). OO JSON stores `orbital_rotation` and `irreps` so `metrics.py` rebuilds the same packing. Packing lives in `src/orbital_rotation.py`.
 
+**Symmetry selection** (`--select`, optimize only)
+
+| Flag | What happens |
+|------|--------------|
+| `--select greedy --n_sym M` | One-shot Kruskal over seniority/quartet candidates using the same NC/variance metric as `--cost_function`, then OO |
+| `--select iterative --n_sym M [--m_round R]` | Repeat selection → warm-started orbital optimization → external Clifford canonicalization; frame-local sen/quartets may pull back to weight>2 products |
+| `--candidates senquart` (default) | Seniorities + quartets (greedy only; iterative always uses senquart per frame) |
+| `--candidates seniority` | Local seniorities only (greedy) |
+| `--parity_output PATH` | Write the selected parity matrix |
+
+Only valid for `--cost_function NC|variance`. Omit the parity positional when selecting.
+
 **`metrics.py`** — `--backend` (sector eigensolver); no `--reference`
 
 | Flag | What happens |
@@ -101,7 +113,8 @@ Input arguments and keywords:
 3. Reference / cost path: \--reference fci\|hf\|dmrg (defaults to fci). ``fci``/``hf`` use ffsim CI costs; ``dmrg`` uses Block2 MPS-native NC/variance. Shared DMRG flags: \--bond\_dim / \--wavefunction\_dir / \--n\_threads.  
 4. Cost function: NC, variance, decoupled, fixed\_sector, switching\_sector (decoupled / sector modes require \--reference fci or hf)  
 5. Orbital packing: \--orbital\_rotation full\|irrep (default full). Irrep mode loads MO irrep labels from a symmetry-adapted chk/FCIDUMP and optimizes only intra-irrep Givens/κ angles (`N_sym` instead of `binom(n,2)`).  
-6. x0: optional initial guess for orbital rotations
+6. Symmetry selection: \--select greedy\|iterative \--n\_sym M builds an independent Z-type set. Greedy performs one-shot Kruskal then OO. Iterative repeats selection, warm-started OO on the accumulated pool, and external `QuasiSymmetries.Clifford` canonicalization after every \--m\_round additions; later frame-local sen/quartets can pull back to higher-order original-basis products. Only valid for NC/variance; omit the parity positional.  
+7. x0: optional initial guess for orbital rotations
 
 Supported cost functions:
 
@@ -113,10 +126,12 @@ Supported cost functions:
 
 Returns:
 
-1. Optimized rotation parameters in a JSON file (plus optional rotated FCIDUMP / orbene). Fields include ``rotation``, ``orbital_rotation``, and (for irrep mode) ``irreps``.
+1. Optimized rotation parameters in a JSON file (plus optional rotated FCIDUMP / orbene). Fields include ``rotation``, ``orbital_rotation``, and (for irrep mode) ``irreps``. With ``--select greedy|iterative``, also ``selection``, ``selected_costs``, ``parity_output`` (and iterative round history).
 
 ```bash
 python optimize_symmetries.py mol.chk parity.txt --orbital_rotation irrep
+python optimize_symmetries.py mol.chk --select greedy --n_sym 4 --cost_function NC
+python optimize_symmetries.py mol.chk --select iterative --n_sym 4 --m_round 2 --cost_function variance
 python optimize_symmetries.py mol.chk parity.txt --reference dmrg --orbital_rotation irrep --bond_dim 250
 ```
 

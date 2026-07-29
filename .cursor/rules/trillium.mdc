@@ -1,0 +1,15 @@
+---
+description: Trillium (Alliance Canada) SLURM / bash script constraints
+globs: "**/*.{sh,slurm}"
+alwaysApply: false
+---
+
+# Trillium cluster scripts
+
+When writing or editing SLURM / bash job scripts for Trillium:
+
+- **Do not** use `#SBATCH --mem-per-cpu` (or pass `--mem-per-cpu` on `sbatch`). Trillium rejects it.
+- Prefer `#SBATCH --cpus-per-task=…` (and optional `#SBATCH --mem=…` only if the partition docs allow a total memory request).
+- Maximum wall time is **24 hours**: `#SBATCH --time=24:00:00` is the upper bound; do not request longer.
+- Prefer short absolute or repo-relative scratch paths when block2 / MPS work is involved; avoid flooding one scratch dir across many cost evaluations when possible.
+- Source `cluster_tests/_qs_env.sh` (or equivalent module + venv activation) rather than inventing a second env stack.

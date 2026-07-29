@@ -1,14 +1,15 @@
 #! /bin/bash
-
+# Legacy OO sweep. Prefer sourcing cluster_tests/_qs_env.sh on Trillium.
+#
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=192
-#SBATCH --time=1:00:00
+#SBATCH --time=24:00:00
 
+set -euo pipefail
 
-module load python/3.11.5
-
-source ../test_env_3/bin/activate
-
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "${_SCRIPT_DIR}/cluster_tests/_qs_env.sh"
 
 #hamiltonians=( "hamiltonians/H4/H4_linear_d2.5560.chk" "hamiltonians/H4/H4_linear_d2.0670.chk" "hamiltonians/H4/H4_linear_d1.0890.chk")
 #parity_matrices=( "hamiltonians/H4/parity_4_sens.txt" "hamiltonians/H4/LNE_2_out_of_8_so.txt" )
