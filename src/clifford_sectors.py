@@ -93,6 +93,128 @@ def z_symmetries_from_parity_matrix(parity_matrix, norb):
     return symmetries
 
 
+def spin_number_z_symmetries(norb):
+    """``N_alpha``, ``N_beta`` parity as interleaved-JW Z products.
+
+    Matches the PDF exact set's two spin-resolved number generators
+    (``P_alpha``, ``P_beta``) in the ``N = 2 n_orb`` qubit register.
+    """
+    from src.sto3g_exact_symmetries import interleaved_spin_number_masks
+
+    n_qubits = 2 * int(norb)
+    masks = interleaved_spin_number_masks(int(norb))
+    symmetries = []
+    for mask in masks:
+        support = [q for q in range(n_qubits) if (int(mask) >> q) & 1]
+        if not support:
+            raise ValueError("empty spin-number mask")
+        term = tuple((int(index), "Z") for index in support)
+        symmetries.append(of.QubitOperator(term, 1.0))
+    return symmetries
+
+
+def _z_symmetry_qubit_mask(symmetry, n_qubits: int) -> int:
+    """Pack a single-term Z product into a GF(2) mask of width ``n_qubits``."""
+    if len(symmetry.terms) != 1:
+        raise ValueError("expected a single Pauli term")
+    ((pauli_term, _coeff),) = symmetry.terms.items()
+    mask = 0
+    for index, pauli in pauli_term:
+        if pauli != "Z":
+            raise ValueError("spin / spatial exact generators must be Z products")
+        if index < 0 or index >= n_qubits:
+            raise ValueError(f"qubit index {index} out of range for n={n_qubits}")
+        mask |= 1 << int(index)
+    return int(mask)
+
+
+def clifford_symmetries_from_spatial(
+    parity_matrix,
+    norb,
+    *,
+    include_spin_number: bool = False,
+):
+    """Build ordered Clifford Z generators from a spatial parity matrix.
+
+    When ``include_spin_number`` is True, prepend ``P_alpha``, ``P_beta`` and
+    drop any spatial row whose interleaved expansion lies in their GF(2) span
+    (e.g. all-ones total particle parity). Sector labels are then
+    ``(e_spin, e_spatial..., s_las...)`` with document ``r = 2 + r_spatial``.
+    """
+    from src.gf2_utils import gf2_int_try_add_to_span
+
+    norb = int(norb)
+    n_qubits = 2 * norb
+    symmetries = []
+    rref: list[int] = []
+    n_spin_kept = 0
+
+    if include_spin_number:
+        for sym in spin_number_z_symmetries(norb):
+            mask = _z_symmetry_qubit_mask(sym, n_qubits)
+            new = gf2_int_try_add_to_span(mask, rref, n_qubits)
+            if new is None:
+                continue
+            rref = new
+            symmetries.append(sym)
+            n_spin_kept += 1
+
+    spatial = z_symmetries_from_parity_matrix(parity_matrix, norb)
+    n_spatial_kept = 0
+    spatial_kept_indices: list[int] = []
+    spatial_dropped_indices: list[int] = []
+    for row_index, sym in enumerate(spatial):
+        mask = _z_symmetry_qubit_mask(sym, n_qubits)
+        new = gf2_int_try_add_to_span(mask, rref, n_qubits)
+        if new is None:
+            spatial_dropped_indices.append(int(row_index))
+            continue
+        rref = new
+        symmetries.append(sym)
+        n_spatial_kept += 1
+        spatial_kept_indices.append(int(row_index))
+
+    return {
+        "symmetries": symmetries,
+        "n_spin": n_spin_kept,
+        "n_spatial": n_spatial_kept,
+        "n_total": len(symmetries),
+        # Row indices into ``parity_matrix`` that survived / were dropped at the
+        # QUBIT level. Callers must not infer this from row counts: with
+        # include_spin_number on, all-ones spatial is dependent on
+        # P_alpha ^ P_beta and one row disappears here rather than in the
+        # spatial GF(2) filter upstream.
+        "spatial_kept_indices": spatial_kept_indices,
+        "spatial_dropped_indices": spatial_dropped_indices,
+    }
+
+
+def reference_sector_label(
+    norb,
+    nelec,
+    clifford,
+    n_symmetries,
+    *,
+    alpha_occupied=None,
+    beta_occupied=None,
+):
+    """Clifford sector label of the reference (default: aufbau RHF) determinant.
+
+    The exact sector must be the one that HOLDS the reference state. Choosing it
+    by sector density instead (``choose_default_exact_sector``) can land on a
+    sector with zero overlap -- for STO-3G N2 that is exactly what happened, and
+    ``reference_weight_sum`` came back 0.0 at every geometry.
+    """
+    n_alpha, n_beta = int(nelec[0]), int(nelec[1])
+    if alpha_occupied is None:
+        alpha_occupied = range(n_alpha)
+    if beta_occupied is None:
+        beta_occupied = range(n_beta)
+    bits = occupation_bits(list(alpha_occupied), list(beta_occupied), int(norb))
+    transformed = apply_clifford_to_basis_bits(bits, clifford)
+    return tuple(transformed[: int(n_symmetries)])
+
+
 def validate_z_symmetries(symmetries, n_qubits):
     """Validate the commuting single-term Z products supported by this backend."""
     if not symmetries:

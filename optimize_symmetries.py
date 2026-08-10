@@ -78,6 +78,80 @@ from src.greedy_selection import (
     write_parity_matrix,
 )
 from src.iterative_pool import select_iterative_pool
+from src.exact_parity import exact_rank, resolve_exact_masks
+from src.exact_taper import (
+    make_exact_taper_row_scorer,
+    prepare_exact_taper_context,
+)
+
+
+def _iterative_pool_kwargs(args, *, norb: int, nelec=None, build_taper: bool = True) -> dict:
+    """Exact-parity + stop-tol kwargs shared by FCI / DMRG iterative paths."""
+    exact_parity_path = getattr(args, "exact_parity", None)
+    exact_masks = resolve_exact_masks(
+        norb,
+        exact_parity_path=exact_parity_path,
+    )
+    # STO-3G / PDF workflow: Clifford also includes N_alpha, N_beta.
+    include_spin = bool(exact_parity_path)
+    iterative_reference = getattr(args, "iterative_reference", "fci_rotate")
+    taper_context = None
+    exact_sector = None
+    if (
+        build_taper
+        and iterative_reference == "exact_taper"
+        and nelec is not None
+    ):
+        taper_context = prepare_exact_taper_context(
+            exact_masks,
+            norb,
+            nelec,
+            exact_sector=getattr(args, "exact_sector", None),
+            include_spin_number=include_spin,
+        )
+        exact_sector = taper_context["exact_sector"]
+    return {
+        "exact_masks": exact_masks,
+        "exact_sector": exact_sector,
+        "taper_context": taper_context,
+        "iterative_reference": iterative_reference,
+        "exact_rank": exact_rank(exact_masks, norb),
+        "include_spin_number_exact": include_spin,
+        "pool_kwargs": {
+            "exact_masks": exact_masks,
+            "exact_sector": exact_sector,
+            "m_round": args.m_round,
+            "max_macroiterations": getattr(args, "max_macroiterations", None),
+            "stable_span_iters": int(getattr(args, "stable_span_iters", 2)),
+            "oo_stop_tol": float(getattr(args, "oo_stop_tol", 1e-6)),
+            "oo_step_tol": float(getattr(args, "oo_step_tol", 1e-5)),
+            "rank_replace_tol": float(getattr(args, "rank_replace_tol", 1e-4)),
+        },
+    }
+
+
+def _iterative_cost_before(selection) -> float:
+    """First recorded OO cost_before, else first-round LAS cost sum, else 0."""
+    rounds = (selection.history or {}).get("rounds") or []
+    for record in rounds:
+        opt = record.get("optimization") or record.get("optimization_final")
+        if opt and "cost_before" in opt:
+            return float(opt["cost_before"])
+    if rounds and "additive_cost" in rounds[0]:
+        return float(rounds[0]["additive_cost"])
+    costs = selection.selected_costs or ()
+    return float(sum(costs)) if costs else 0.0
+
+
+def _iterative_elapsed(selection) -> float:
+    """Sum OO elapsed times over macros that actually ran optimization."""
+    total = 0.0
+    for record in (selection.history or {}).get("rounds") or []:
+        for key in ("optimization", "optimization_final"):
+            opt = record.get(key)
+            if opt and "elapsed" in opt:
+                total += float(opt["elapsed"])
+    return total
 
 
 def commutator_cost(moldata: ffsim.MolecularData,
@@ -191,7 +265,8 @@ def parity_matrix_to_quasisymmetries(parity_matrix: np.ndarray,
                                      norb: int,
                                      nelec: tuple[int, int]) -> list[scipy.sparse.linalg.LinearOperator]:
     local_parities = parities(norb, nelec)
-    if len(parity_matrix) == 0: # needed when dealing with parities and numbers together
+    parity_matrix = np.atleast_2d(np.asarray(parity_matrix, dtype=int))
+    if parity_matrix.size == 0:  # needed when dealing with parities and numbers together
         return([])
     if parity_matrix.shape[1] == norb:
         operators = []
@@ -358,6 +433,73 @@ def callback(intermediate_result) -> None:
         print("{0:4.6f}".format(intermediate_result.fun))
     else:
         print("(iter)")
+
+
+def make_oo_trace_callback(
+    store: list,
+    *,
+    verbose: bool = False,
+    label: str = "",
+    objective=None,
+):
+    """L-BFGS-B callback that records cost and parameter snapshots.
+
+    SciPy's L-BFGS-B historically calls ``callback(xk)`` with the parameter
+    vector only. Prefer a :class:`TrackingObjective` (or any callable with
+    ``last_x`` / ``last_fun``) so we reuse the optimizer's last evaluation
+    instead of re-running the cost.
+    """
+
+    def _cb(intermediate_result) -> None:
+        if hasattr(intermediate_result, "fun") and hasattr(intermediate_result, "x"):
+            x = np.asarray(intermediate_result.x, dtype=float)
+            cost = float(intermediate_result.fun)
+        else:
+            x = np.asarray(intermediate_result, dtype=float)
+            cost = None
+            last_x = getattr(objective, "last_x", None)
+            last_fun = getattr(objective, "last_fun", None)
+            if (
+                last_x is not None
+                and last_fun is not None
+                and last_x.shape == x.shape
+                and np.allclose(last_x, x, rtol=0.0, atol=0.0)
+            ):
+                cost = float(last_fun)
+            elif objective is not None:
+                cost = float(objective(x))
+        store.append(
+            {
+                "step": len(store),
+                "label": label,
+                "cost": cost,
+                "x": x.tolist(),
+            }
+        )
+        if verbose:
+            callback(intermediate_result)
+
+    return _cb
+
+
+class TrackingObjective:
+    """Wrap a scalar cost so L-BFGS callbacks can reuse the last evaluation."""
+
+    __slots__ = ("_fn", "last_x", "last_fun", "nfev")
+
+    def __init__(self, fn):
+        self._fn = fn
+        self.last_x: np.ndarray | None = None
+        self.last_fun: float | None = None
+        self.nfev = 0
+
+    def __call__(self, x) -> float:
+        x_arr = np.asarray(x, dtype=float)
+        value = float(self._fn(x_arr))
+        self.last_x = x_arr.copy()
+        self.last_fun = value
+        self.nfev += 1
+        return value
 
 
 def parse_sector_label(text):
@@ -595,6 +737,11 @@ if __name__=="__main__":
         help="maximum sector switches for switching_sector mode",
     )
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument(
+        "--oo_trace_json",
+        default=None,
+        help="write L-BFGS-B cost/parameter snapshots to this JSON path",
+    )
     parser.add_argument("--outname", default=None)
     parser.add_argument("--output_fcidump", default=None,
                         help="write rotated FCIDUMP here")
@@ -617,6 +764,26 @@ if __name__=="__main__":
         )
     except ValueError as exc:
         parser.error(str(exc))
+
+    oo_trace_store: list = []
+
+    def _oo_callback(label: str = "", objective=None):
+        if args.oo_trace_json or args.verbose:
+            return make_oo_trace_callback(
+                oo_trace_store,
+                verbose=bool(args.verbose),
+                label=label,
+                objective=objective,
+            )
+        return None
+
+    def _flush_oo_trace() -> None:
+        if not args.oo_trace_json:
+            return
+        path = Path(args.oo_trace_json)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(oo_trace_store, indent=2), encoding="utf-8")
+        print(f"[oo_trace] wrote {len(oo_trace_store)} snapshots to {path}")
 
     args.n_sym = resolve_select_n_sym(
         select=args.select,
@@ -715,6 +882,7 @@ if __name__=="__main__":
                         f"[select greedy] quota senquart "
                         f"(n_singles={args.n_singles}, "
                         f"n_quartets={args.n_quartets}, "
+                        f"disjoint={bool(getattr(args, 'disjoint_orbitals', 1))}, "
                         f"cost={args.cost_function})"
                     )
                     selection = select_senquart_quota(
@@ -722,6 +890,11 @@ if __name__=="__main__":
                         _score_row,
                         int(args.n_singles),
                         int(args.n_quartets),
+                        disjoint_orbitals=bool(getattr(args, "disjoint_orbitals", 1)),
+                        exact_masks=resolve_exact_masks(
+                            solver.n_sites,
+                            exact_parity_path=getattr(args, "exact_parity", None),
+                        ),
                     )
                 else:
                     print(
@@ -733,6 +906,10 @@ if __name__=="__main__":
                         args.n_sym,
                         _score_row,
                         candidates=args.candidates,
+                        exact_masks=resolve_exact_masks(
+                            solver.n_sites,
+                            exact_parity_path=getattr(args, "exact_parity", None),
+                        ),
                     )
                 parity_matrix = selection.parity_matrix
                 selected_costs = selection.selected_costs
@@ -741,13 +918,30 @@ if __name__=="__main__":
                     cost_function=args.cost_function,
                     parity_output="",
                 )
+                _exact = resolve_exact_masks(
+                    solver.n_sites,
+                    exact_parity_path=getattr(args, "exact_parity", None),
+                )
+                selection_meta["exact_masks"] = [int(m) for m in _exact]
+                selection_meta["exact_rank"] = exact_rank(_exact, solver.n_sites)
+                selection_meta["include_spin_number_exact"] = bool(
+                    getattr(args, "exact_parity", None)
+                )
+                selection_meta["disjoint_orbitals"] = bool(
+                    getattr(args, "disjoint_orbitals", 1)
+                )
             else:
                 print(
-                    f"[select iterative] GF(2) pool extension "
-                    f"(n_sym={args.n_sym}, m_round={args.m_round}, "
+                    f"[select iterative] GF(2) NC-ranked fixed-M LAS "
+                    f"(M={args.n_sym}, max_macro={getattr(args, 'max_macroiterations', None)}, "
                     f"cost={args.cost_function})"
                 )
                 round_results = []
+                iter_setup = _iterative_pool_kwargs(
+                    args,
+                    norb=solver.n_sites,
+                    build_taper=False,
+                )
 
                 def _optimize_pool(
                     accumulated_parity: np.ndarray,
@@ -759,7 +953,9 @@ if __name__=="__main__":
                             "iterative optimization requires initial x"
                         )
                     costs.parity_matrix = accumulated_parity
-                    objective = costs.cost_function(args.cost_function)
+                    objective = TrackingObjective(
+                        costs.cost_function(args.cost_function)
+                    )
                     before = float(objective(parameters))
                     print(
                         f"[select iterative] round {round_index + 1}: "
@@ -767,12 +963,16 @@ if __name__=="__main__":
                         f"from cost {before:.8g}"
                     )
                     started = time.time()
+                    trace_start = len(oo_trace_store)
                     result = scipy.optimize.minimize(
                         objective,
                         parameters,
                         method="L-BFGS-B",
                         options={"maxiter": args.optimizer_maxiter},
-                        callback=callback if args.verbose else None,
+                        callback=_oo_callback(
+                            f"iterative_round_{round_index}",
+                            objective=objective,
+                        ),
                     )
                     round_results.append(result)
                     elapsed_round = time.time() - started
@@ -794,16 +994,17 @@ if __name__=="__main__":
                         "nfev": int(getattr(result, "nfev", 0)),
                         "elapsed": float(elapsed_round),
                         "message": str(result.message),
+                        "oo_trace_slice": [trace_start, len(oo_trace_store)],
                     }
 
                 selection = select_iterative_pool(
                     solver.n_sites,
                     args.n_sym,
                     _score_row,
-                    m_round=args.m_round,
                     score_row_at=_score_row_at,
                     optimize_pool=_optimize_pool,
                     initial_parameters=x0_sel,
+                    **iter_setup["pool_kwargs"],
                 )
                 iterative_res = round_results[-1]
                 parity_matrix = selection.parity_matrix
@@ -812,6 +1013,9 @@ if __name__=="__main__":
                     cost_function=args.cost_function,
                     parity_output="",
                     m_round=args.m_round,
+                )
+                selection_meta["include_spin_number_exact"] = bool(
+                    iter_setup.get("include_spin_number_exact")
                 )
             parity_out = args.parity_output or default_parity_output_path(
                 args.outname, select=args.select
@@ -871,26 +1075,22 @@ if __name__=="__main__":
             cost_before = f(x0)
             print("before optimization: {0:4.6f}".format(cost_before))
         else:
-            cost_before = float(
-                selection.history["rounds"][0]["optimization"]["cost_before"]
-            )
+            cost_before = _iterative_cost_before(selection)
 
         t_start = time.time()
         if iterative_res is not None:
             res = iterative_res
-            elapsed = sum(
-                float(round_record["optimization"].get("elapsed", 0.0))
-                for round_record in selection.history["rounds"]
-            )
+            elapsed = _iterative_elapsed(selection)
             print("iterative final:", res.message)
             print("optimized: {0:4.6f}".format(res.fun))
         elif args.optimizer_maxiter > 0:
+            f_tracked = TrackingObjective(f)
             res = scipy.optimize.minimize(
-                f,
+                f_tracked,
                 x0,
                 method="L-BFGS-B",
                 options={"maxiter": args.optimizer_maxiter},
-                callback=callback if args.verbose else None,
+                callback=_oo_callback("greedy_final", objective=f_tracked),
             )
             elapsed = time.time() - t_start
             print(res.message)
@@ -946,6 +1146,7 @@ if __name__=="__main__":
             out_data["irreps"] = np.asarray(rotation_irreps, dtype=int).tolist()
         if selection_meta is not None:
             out_data.update(selection_meta)
+        _flush_oo_trace()
         with open(outname, "a") as fp:
             json.dump(vars(args) | out_data, fp, indent=2)
         print("results written to", outname)
@@ -1029,29 +1230,39 @@ if __name__=="__main__":
             return float(objective(parameters))
 
         if args.select == "greedy":
+            _exact = resolve_exact_masks(
+                moldata.norb,
+                exact_parity_path=getattr(args, "exact_parity", None),
+            )
             if args.n_singles is not None and args.n_quartets is not None:
                 print(
                     f"[select greedy] quota senquart "
                     f"(n_singles={args.n_singles}, "
                     f"n_quartets={args.n_quartets}, "
-                    f"cost={args.cost_function})"
+                    f"disjoint={bool(getattr(args, 'disjoint_orbitals', 1))}, "
+                    f"cost={args.cost_function}, "
+                    f"rank(E)={exact_rank(_exact, moldata.norb)})"
                 )
                 selection = select_senquart_quota(
                     moldata.norb,
                     _score_row,
                     int(args.n_singles),
                     int(args.n_quartets),
+                    disjoint_orbitals=bool(getattr(args, "disjoint_orbitals", 1)),
+                    exact_masks=_exact,
                 )
             else:
                 print(
                     f"[select greedy] scoring {args.candidates} pool "
-                    f"(n_sym={args.n_sym}, cost={args.cost_function})"
+                    f"(n_sym={args.n_sym}, cost={args.cost_function}, "
+                    f"rank(E)={exact_rank(_exact, moldata.norb)})"
                 )
                 selection = select_from_pool(
                     moldata.norb,
                     args.n_sym,
                     _score_row,
                     candidates=args.candidates,
+                    exact_masks=_exact,
                 )
             parity_matrix = selection.parity_matrix
             selected_costs = selection.selected_costs
@@ -1060,13 +1271,53 @@ if __name__=="__main__":
                 cost_function=args.cost_function,
                 parity_output="",
             )
+            selection_meta["exact_masks"] = [int(m) for m in _exact]
+            selection_meta["exact_rank"] = exact_rank(_exact, moldata.norb)
+            selection_meta["include_spin_number_exact"] = bool(
+                getattr(args, "exact_parity", None)
+            )
+            selection_meta["disjoint_orbitals"] = bool(
+                getattr(args, "disjoint_orbitals", 1)
+            )
         else:
+            iter_setup = _iterative_pool_kwargs(
+                args,
+                norb=moldata.norb,
+                nelec=moldata.nelec,
+                build_taper=True,
+            )
+            use_exact_taper = (
+                iter_setup["iterative_reference"] == "exact_taper"
+                and iter_setup["taper_context"] is not None
+            )
             print(
-                f"[select iterative] GF(2) pool extension "
-                f"(n_sym={args.n_sym}, m_round={args.m_round}, "
-                f"cost={args.cost_function})"
+                f"[select iterative] NC-ranked fixed-M LAS "
+                f"(M={args.n_sym}, max_macro={getattr(args, 'max_macroiterations', None)}, "
+                f"cost={args.cost_function}, rank_ref={iter_setup['iterative_reference']}, "
+                f"oo_ref=fci_rotate)"
             )
             round_results = []
+
+            if use_exact_taper:
+                taper_ctx = iter_setup["taper_context"]
+
+                def _row_to_ops(row: np.ndarray):
+                    return parity_matrix_to_quasisymmetries(
+                        np.atleast_2d(np.asarray(row, dtype=int)),
+                        moldata.norb,
+                        moldata.nelec,
+                    )
+
+                _score_row_at = make_exact_taper_row_scorer(
+                    moldata,
+                    taper_ctx,
+                    cost_function=args.cost_function,
+                    pairs=rotation_pairs,
+                    row_to_operators=_row_to_ops,
+                )
+
+                def _score_row(row: np.ndarray) -> float:
+                    return float(_score_row_at(row, x0))
 
             def _optimize_pool(
                 accumulated_parity: np.ndarray,
@@ -1082,27 +1333,34 @@ if __name__=="__main__":
                     moldata.norb,
                     moldata.nelec,
                 )
+                # OO always matches mixed-pool: rotate a frozen FCI/HF reference.
+                # exact_taper (if selected) is used only for discrete ranking scores.
                 if args.cost_function == "NC":
-                    objective = commutator_cost(
+                    raw_objective = commutator_cost(
                         moldata, operators, state, pairs=rotation_pairs
                     )
                 else:
-                    objective = variance_cost(
+                    raw_objective = variance_cost(
                         moldata, operators, state, pairs=rotation_pairs
                     )
+                objective = TrackingObjective(raw_objective)
                 before = float(objective(parameters))
                 print(
                     f"[select iterative] round {round_index + 1}: "
                     f"optimizing {len(accumulated_parity)} generators "
-                    f"from cost {before:.8g}"
+                    f"from cost {before:.8g} (oo_ref=fci_rotate)"
                 )
                 started = time.time()
+                trace_start = len(oo_trace_store)
                 result = scipy.optimize.minimize(
                     objective,
                     parameters,
                     method="L-BFGS-B",
                     options={"maxiter": args.optimizer_maxiter},
-                    callback=callback if args.verbose else None,
+                    callback=_oo_callback(
+                        f"iterative_round_{round_index}",
+                        objective=objective,
+                    ),
                 )
                 round_results.append(result)
                 elapsed_round = time.time() - started
@@ -1124,16 +1382,18 @@ if __name__=="__main__":
                     "nfev": int(getattr(result, "nfev", 0)),
                     "elapsed": float(elapsed_round),
                     "message": str(result.message),
+                    "oo_trace_slice": [trace_start, len(oo_trace_store)],
+                    "oo_reference": "fci_rotate",
                 }
 
             selection = select_iterative_pool(
                 moldata.norb,
                 args.n_sym,
                 _score_row,
-                m_round=args.m_round,
                 score_row_at=_score_row_at,
                 optimize_pool=_optimize_pool,
                 initial_parameters=x0,
+                **iter_setup["pool_kwargs"],
             )
             iterative_res = round_results[-1]
             x0 = np.asarray(selection.optimized_parameters, dtype=float)
@@ -1144,6 +1404,14 @@ if __name__=="__main__":
                 parity_output="",
                 m_round=args.m_round,
             )
+            selection_meta["iterative_reference"] = iter_setup["iterative_reference"]
+            selection_meta["oo_reference"] = "fci_rotate"
+            selection_meta["include_spin_number_exact"] = bool(
+                iter_setup.get("include_spin_number_exact")
+            )
+            if use_exact_taper:
+                selection_meta["exact_sector"] = list(taper_ctx["exact_sector"])
+                selection_meta["exact_rank"] = int(iter_setup["exact_rank"])
         parity_out = args.parity_output or default_parity_output_path(
             args.outname, select=args.select
         )
@@ -1269,9 +1537,7 @@ if __name__=="__main__":
         raise ValueError("unknown cost function")
 
     if iterative_res is not None:
-        cost_before = float(
-            selection.history["rounds"][0]["optimization"]["cost_before"]
-        )
+        cost_before = _iterative_cost_before(selection)
     else:
         cost_before = (
             initial_energy if args.cost_function == "switching_sector" else f(x0)
@@ -1282,10 +1548,7 @@ if __name__=="__main__":
     t_start = time.time()
     if iterative_res is not None:
         res = iterative_res
-        elapsed = sum(
-            float(round_record["optimization"]["elapsed"])
-            for round_record in selection.history["rounds"]
-        )
+        elapsed = _iterative_elapsed(selection)
         print("iterative final:", res.message)
         print("optimized: {0:4.6f}".format(res.fun))
         if args.output_fcidump is not None:
@@ -1304,18 +1567,29 @@ if __name__=="__main__":
             ).to_fcidump(args.output_fcidump)
     elif args.optimizer_maxiter > 0:
         if args.cost_function in ("NC", "variance"):
-            res = optimize_fcidump(
-                input_path=args.molpath,
-                symmetry_op=symmetry_op,
-                reference_fn=reference_fn,
-                output_path=args.output_fcidump,
-                x0=x0,
+            # Use the already-built objective so --oo_trace_json can snapshot x.
+            f_tracked = TrackingObjective(f)
+            res = scipy.optimize.minimize(
+                f_tracked,
+                x0,
                 method="L-BFGS-B",
-                maxiter=args.optimizer_maxiter,
-                verbose=args.verbose,
-                cost=args.cost_function,
-                pairs=rotation_pairs,
+                options={"maxiter": args.optimizer_maxiter},
+                callback=_oo_callback("final", objective=f_tracked),
             )
+            if args.output_fcidump is not None:
+                U_opt = x_to_rotation(res.x, moldata.norb, rotation_pairs)
+                rh = moldata.hamiltonian.rotated(U_opt)
+                ffsim.MolecularData(
+                    atom=moldata.atom,
+                    basis=moldata.basis,
+                    spin=moldata.spin,
+                    nelec=moldata.nelec,
+                    hf_energy=moldata.hf_energy,
+                    norb=moldata.norb,
+                    core_energy=moldata.core_energy,
+                    one_body_integrals=rh.one_body_tensor,
+                    two_body_integrals=rh.two_body_tensor,
+                ).to_fcidump(args.output_fcidump)
         elif args.cost_function == "switching_sector":
             if args.sector_backend == "clifford":
                 res, switching_history = optimize_with_clifford_sector_switching(
@@ -1348,12 +1622,13 @@ if __name__=="__main__":
                     )
                 )
         else:
+            f_tracked = TrackingObjective(f)
             res = scipy.optimize.minimize(
-                f,
+                f_tracked,
                 x0,
                 method="L-BFGS-B",
                 options={"maxiter": args.optimizer_maxiter},
-                callback=callback if args.verbose else None,
+                callback=_oo_callback("final", objective=f_tracked),
             )
 
         if args.cost_function not in ("NC", "variance") and args.output_fcidump is not None:
@@ -1410,6 +1685,7 @@ if __name__=="__main__":
 
     full_output = vars(args) | out_data
 
+    _flush_oo_trace()
     with open(outname, "a") as fp:
         json.dump(full_output, fp, indent=2)
 

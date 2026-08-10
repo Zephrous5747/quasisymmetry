@@ -1,6 +1,7 @@
 import argparse
 import bisect
 import json
+import os
 import time
 from math import comb
 from pathlib import Path
@@ -28,7 +29,13 @@ from src.coupled_energy_core import (
 from src.energy_diagnostics import (
     reference_coupled_energy_k,
     sector_data_from_gs_pairs,
+    sector_dimension_stats,
     state_labels_for_columns,
+)
+from src.exact_parity import (
+    expand_exact_sector_with_spin,
+    filter_labels_fixed_exact,
+    resolve_exact_las_split,
 )
 from src.davidson_solver import solve_sector_davidson
 from src.sector_utils import subspace_matrix, symmetry_sectors
@@ -41,6 +48,7 @@ from src.clifford_sectors import (
     candidate_hamiltonian,
     candidate_reference_weights,
     ci_vector_to_jw_state,
+    clifford_symmetries_from_spatial,
     coupled_energy_curve,
     load_symmetry_manifest,
     molecular_hamiltonian_to_jw,
@@ -61,6 +69,76 @@ from src.clifford_sectors import (
 
 # Used by MPI worker processes (must be importable at module level).
 import ffsim
+
+# Retained reference weight W = sum_j w_j over the sectors kept after the exact
+# filter. W = 1 iff the reference state lies entirely inside the retained
+# sectors. W < 1 means amplitude was thrown away by the exact-sector choice and
+# the coupled curve can never reach the FCI energy, so K cannot converge -- this
+# is precisely the K = 261/3584 failure mode. Guard it explicitly.
+REFERENCE_WEIGHT_TOL = float(os.environ.get("REFERENCE_WEIGHT_TOL", "1e-4"))
+
+
+def load_oo_input(path):
+    """Load an optimize_* outname JSON.
+
+    Outnames may contain one JSON object, several concatenated objects (rewrites),
+    or a JSON object followed by a bare rotation vector. Prefer the last complete
+    object; fall back to ``parity_output`` when ``parity`` is null.
+    """
+    text = Path(path).read_text(encoding="utf-8")
+    decoder = json.JSONDecoder()
+    records = []
+    index, length = 0, len(text)
+    while index < length:
+        while index < length and text[index].isspace():
+            index += 1
+        if index >= length:
+            break
+        if text[index] != "{":
+            # A bare rotation vector (or other non-object tail) trails the
+            # record we want. Stop rather than mis-parsing it as input.
+            break
+        obj, end = decoder.raw_decode(text, index)
+        records.append(obj)
+        index = end
+    if not records:
+        raise ValueError(f"OO input must contain a JSON object: {path}")
+
+    data = records[-1]
+    if not isinstance(data, dict):
+        raise ValueError(f"OO input must contain a JSON object: {path}")
+    if data.get("parity") in (None, "", "null"):
+        parity_output = data.get("parity_output")
+        if parity_output:
+            data = dict(data)
+            data["parity"] = parity_output
+    return data
+
+
+def _check_reference_weight(out_data, *, strict=False):
+    """Warn (or fail) when the retained sector does not hold the reference."""
+    weight = out_data.get("reference_weight_sum")
+    if weight is None:
+        return None
+    weight = float(weight)
+    print(f"[metrics] reference_weight_sum = {weight:.12f}", flush=True)
+    if weight >= 1.0 - REFERENCE_WEIGHT_TOL:
+        print("  OK", flush=True)
+        return True
+
+    message = (
+        f"reference_weight_sum = {weight:.6f}"
+        " < 1: the retained exact sector does not contain the whole reference"
+        " state, so K cannot converge and will run to the retained dimension ("
+        f"{out_data.get('relevant_sectors_total_dim')}"
+        "). Usual cause: the exact generators are not symmetries of H at this"
+        " geometry (stale orbital indices), or the exact sector label is wrong."
+    )
+    out_data["reference_weight_error"] = message
+    if strict:
+        raise SystemExit(f"metrics precondition failed: {message}")
+    print(f"[metrics][ERROR] {message}", flush=True)
+    return False
 
 
 def submatrix_eigenvalues_to_target(A: np.ndarray, e_target: float):
@@ -321,18 +399,90 @@ def solve_tapered_task(data):
 
 
 def load_clifford_symmetries(args, input_data, moldata):
-    """Load ordered Pauli symmetries from a manifest or legacy parity matrix."""
+    """Load ordered Pauli symmetries from a manifest or legacy parity matrix.
+
+    When OO JSON carries ``exact_masks`` (+ ``las_masks``), build Clifford on
+    exact ∪ LAS with exact generators first so sector labels are ``(e, s)``.
+    """
     manifest_path = args.symmetry_manifest or input_data.get("symmetry_manifest")
     if manifest_path:
         manifest = load_symmetry_manifest(manifest_path)
-        return manifest["symmetries"], manifest["parity_matrix"], manifest_path
+        return manifest["symmetries"], manifest["parity_matrix"], manifest_path, None
 
     parity_path = input_data.get("parity")
     if parity_path is None:
         raise ValueError("Clifford backend needs a symmetry manifest or parity matrix")
     parity_matrix = np.atleast_2d(np.loadtxt(parity_path, dtype=int))
-    symmetries = z_symmetries_from_parity_matrix(parity_matrix, moldata.norb)
-    return symmetries, parity_matrix, None
+
+    split = resolve_exact_las_split(input_data, parity_matrix, moldata.norb)
+    if not split["exact_tapered"]:
+        symmetries = z_symmetries_from_parity_matrix(parity_matrix, moldata.norb)
+        return symmetries, parity_matrix, None, split
+
+    built = clifford_symmetries_from_spatial(
+        split["combined_matrix"],
+        moldata.norb,
+        include_spin_number=split["include_spin_number_exact"],
+    )
+
+    # n_exact must count the exact rows that SURVIVED at the QUBIT level, not
+    # the spatial row count. With spin-number generators present, iota(all-ones)
+    # = P_alpha ^ P_beta, so an all-ones exact row is GF(2)-dependent here and
+    # is dropped by clifford_symmetries_from_spatial rather than upstream.
+    # Deriving n_exact from row counts (the old
+    # ``n_exact_spatial_qubit = max(0, n_spatial_kept - n_las)``) is off by one
+    # exactly when that happens, which mis-slices every sector label.
+    n_spatial_exact = int(split["n_exact_spatial"])
+    kept = [int(i) for i in built.get("spatial_kept_indices", [])]
+    n_exact_spatial_qubit = sum(1 for i in kept if i < n_spatial_exact)
+    n_exact = int(built["n_spin"]) + n_exact_spatial_qubit
+    n_las = int(built["n_spatial"]) - n_exact_spatial_qubit
+
+    # r_qubit is computed independently (GF(2) rank in F_2^(2n)); if it ever
+    # disagrees with what Clifford actually kept, every sector label would be
+    # sliced at the wrong offset and K would be silently meaningless.
+    if int(split["r_qubit"]) != n_exact:
+        raise SystemExit(
+            f"[metrics] exact rank mismatch: resolve_exact_las_split gave "
+            f"r_qubit={split['r_qubit']} but the Clifford construction kept "
+            f"n_exact={n_exact} (n_spin={built['n_spin']}, exact spatial rows "
+            f"kept {n_exact_spatial_qubit} of {n_spatial_exact}). Refusing to "
+            "run: sector labels would be sliced at the wrong offset."
+        )
+
+    # Expected, not an error: iota(all-ones) = P_alpha ^ P_beta, so an all-ones
+    # exact row is dependent once spin-number generators lead the list and is
+    # dropped here. Record how many, since each drop leaves a point-group
+    # generator unpinned by the tapering.
+    n_exact_dropped = n_spatial_exact - n_exact_spatial_qubit
+    if n_exact_dropped:
+        print(
+            f"[metrics][warn] n_exact={n_exact}"
+            f" but r_spatial+n_spin={n_spatial_exact + int(built['n_spin'])}"
+            f": {n_exact_dropped} exact row(s) were dropped at the qubit level,"
+            " so that many point-group generators will be left unpinned.",
+            flush=True,
+        )
+
+    split = dict(split)
+    split["n_exact"] = n_exact
+    split["n_las"] = n_las
+    split["n_tail"] = 2 * moldata.norb - n_exact - n_las
+    split["n_exact_dropped_at_qubit_level"] = int(n_exact_dropped)
+    split["n_las_dropped_at_qubit_level"] = int(
+        len(built.get("spatial_dropped_indices", [])) - n_exact_dropped
+    )
+    split["clifford_spatial_kept_indices"] = kept
+    split["clifford_spatial_dropped_indices"] = [
+        int(i) for i in built.get("spatial_dropped_indices", [])
+    ]
+    split["exact_sector"] = expand_exact_sector_with_spin(
+        split.get("exact_sector"),
+        moldata.nelec,
+        include_spin_number=split["include_spin_number_exact"],
+        n_exact_spatial=n_exact_spatial_qubit,
+    )
+    return built["symmetries"], split["combined_matrix"], None, split
 
 
 def solve_clifford_sectors(frame, physical_sectors, labels, n_roots, parallel):
@@ -521,7 +671,7 @@ def run_clifford_metrics(args, input_data, out_data):
     stage_start = time.time()
     moldata = load_moldata(input_data["molpath"])
     dumpdata = fcidump_data(input_data["molpath"])
-    symmetries, parity_matrix, manifest_path = load_clifford_symmetries(
+    symmetries, parity_matrix, manifest_path, exact_split = load_clifford_symmetries(
         args, input_data, moldata
     )
     timings["load_input"] = time.time() - stage_start
@@ -553,6 +703,39 @@ def run_clifford_metrics(args, input_data, out_data):
     if missing:
         raise ValueError(f"requested sector labels have no physical determinants: {missing}")
 
+    # Fix the exact sector and keep only sectors that agree with it on the
+    # leading n_exact bits. Everything else is a different exact-symmetry sector
+    # and does not belong in the coupled block.
+    exact_sector = None
+    exact_sector_source = None
+    n_sectors_total = len(labels)
+    if exact_split is not None and exact_split.get("exact_tapered"):
+        n_exact = int(exact_split["n_exact"])
+        exact_sector = exact_split.get("exact_sector")
+        exact_sector_source = "input"
+        if exact_sector is None and n_exact > 0:
+            # The exact sector MUST be the one holding the reference state.
+            # Picking it by sector density instead put N2 in a sector with zero
+            # reference overlap at every geometry (reference_weight_sum = 0.0),
+            # which is what made K saturate.
+            from src.clifford_sectors import reference_sector_label
+
+            exact_sector = reference_sector_label(
+                moldata.norb,
+                moldata.nelec,
+                frame["clifford"],
+                n_exact,
+            )
+            exact_sector_source = "reference_determinant"
+            print(
+                "[metrics] exact_sector defaulted to the reference determinant's"
+                f" sector {''.join(str(int(b)) for b in exact_sector)}",
+                flush=True,
+            )
+        if exact_sector is not None:
+            exact_sector = tuple(int(b) for b in exact_sector)
+            labels = filter_labels_fixed_exact(labels, n_exact, exact_sector)
+
     n_roots = roots_per_sector(args)
     stage_start = time.time()
     physical_matrix = None
@@ -577,7 +760,9 @@ def run_clifford_metrics(args, input_data, out_data):
     timings["solve_sectors"] = time.time() - stage_start
 
     stage_start = time.time()
-    exact_energy, _ = get_fci(dumpdata)
+    # Keep the FCI vector: it is the default overlap reference, so the retained
+    # reference weight W can be computed exactly without a separate DMRG solve.
+    exact_energy, exact_vector = get_fci(dumpdata, flatten=True)
     timings["solve_parent_fci"] = time.time() - stage_start
 
     decoupled_energy = min(
@@ -614,15 +799,22 @@ def run_clifford_metrics(args, input_data, out_data):
 
         stage_start = time.time()
         if args.coupled_energy_method == "reference":
-            from src.dmrg_solver import DMRGConfig, get_dmrg_reference
+            # getattr: callers that build an args namespace programmatically
+            # (older point scripts) may not carry the flag; FCI is the default.
+            overlap_reference = getattr(args, "overlap_reference", "fci")
+            if overlap_reference == "dmrg":
+                from src.dmrg_solver import DMRGConfig, get_dmrg_reference
 
-            _, overlap_vec = get_dmrg_reference(
-                dumpdata,
-                store_dir=args.wavefunction_dir,
-                config=DMRGConfig(max_bond_dim=args.bond_dim),
-                n_threads=args.n_threads,
-                reuse=True,
-            )
+                _, overlap_vec = get_dmrg_reference(
+                    dumpdata,
+                    store_dir=args.wavefunction_dir,
+                    config=DMRGConfig(max_bond_dim=args.bond_dim),
+                    n_threads=args.n_threads,
+                    reuse=True,
+                )
+            else:
+                # Exact reference, already solved above for E_FCI.
+                overlap_vec = exact_vector
             rotated_overlap = ffsim.apply_orbital_rotation(
                 overlap_vec,
                 rotation,
@@ -647,7 +839,7 @@ def run_clifford_metrics(args, input_data, out_data):
                 exact_energy=exact_energy,
                 tolerance=CHEMICAL_PRECISION,
             )
-            out_data["overlap_reference"] = "dmrg"
+            out_data["overlap_reference"] = overlap_reference
         else:
             curve = perturbative_coupled_energy_curve(
                 h_coupled,
@@ -718,6 +910,65 @@ def run_clifford_metrics(args, input_data, out_data):
             "timings": timings,
         }
     )
+
+    # Exact/LAS bookkeeping. r_sp governs the GF(2) independence test and the
+    # budget bound M <= n - r_sp; r_qubit governs tapering and the length of the
+    # exact sector label. They differ by one exactly when all-ones is in the
+    # spatial exact set, so both are recorded rather than a single "rank".
+    if exact_split is not None:
+        out_data["exact_tapered"] = bool(exact_split.get("exact_tapered", False))
+        out_data["n_exact"] = int(exact_split.get("n_exact", 0))
+        out_data["n_exact_spatial"] = int(exact_split.get("n_exact_spatial", 0))
+        out_data["n_spin_exact"] = int(exact_split.get("n_spin_exact", 0))
+        out_data["n_las"] = int(exact_split.get("n_las", 0))
+        out_data["n_tail"] = int(exact_split.get("n_tail", 0))
+        out_data["r_sp"] = exact_split.get("r_sp")
+        out_data["r_qubit"] = exact_split.get("r_qubit")
+        out_data["M_max_spatial"] = exact_split.get("M_max_spatial")
+        out_data["exact_sector"] = (
+            list(exact_sector) if exact_sector is not None else None
+        )
+        out_data["exact_sector_source"] = exact_sector_source
+        out_data["combined_rank"] = exact_split.get("combined_rank")
+        out_data["n_exact_dropped_at_qubit_level"] = exact_split.get(
+            "n_exact_dropped_at_qubit_level"
+        )
+        out_data["n_las_dropped_at_qubit_level"] = exact_split.get(
+            "n_las_dropped_at_qubit_level"
+        )
+        out_data["exact_masks"] = [int(m) for m in exact_split.get("exact_masks", [])]
+        out_data["las_masks"] = [int(m) for m in exact_split.get("las_masks_kept", [])]
+        out_data["las_masks_dropped"] = [
+            int(m) for m in exact_split.get("las_masks_dropped", [])
+        ]
+
+    # D_max = largest joint exact+approximate sector dimension, over the sectors
+    # actually used by the coupled curve. This is the cost figure the report
+    # plots; total_dim (the old "dim") sums over sectors and overstates it.
+    selected_dims = {
+        label: sector_results[label]["dimension"] for label in selected_sectors
+    }
+    retained_dims = {
+        label: sector_results[label]["dimension"] for label in labels
+    }
+    out_data["sector_dimension_stats"] = sector_dimension_stats(selected_dims)
+    out_data["retained_sector_dimension_stats"] = sector_dimension_stats(retained_dims)
+    out_data["D_max"] = out_data["sector_dimension_stats"]["D_max"]
+    out_data["D_min"] = out_data["sector_dimension_stats"]["D_min"]
+    out_data["n_sectors"] = out_data["sector_dimension_stats"]["n_sectors"]
+    # Sectors surviving the exact filter, vs all physical sectors before it.
+    out_data["n_sectors_total"] = int(n_sectors_total)
+    out_data["exact_sector_total_dim"] = out_data[
+        "retained_sector_dimension_stats"
+    ]["total_dim"]
+    print("  D_max:", out_data["D_max"])
+
+    weight_sum = out_data.get("reference_weight_sum")
+    out_data["reference_weight_ok"] = (
+        weight_sum is not None
+        and abs(float(weight_sum) - 1.0) <= REFERENCE_WEIGHT_TOL
+    )
+    _check_reference_weight(out_data, strict=args.strict_reference_weight)
 
     if args.save_tapered_lcu:
         if args.clifford_block_builder != "tapered":
@@ -799,6 +1050,14 @@ if __name__ == "__main__":
         help="sector representation for FCI/Lanczos metrics",
     )
     parser.add_argument(
+        "--strict_reference_weight",
+        action="store_true",
+        help=(
+            "abort if the retained reference weight W != 1; W < 1 means the "
+            "exact sector does not hold the reference state and K cannot converge"
+        ),
+    )
+    parser.add_argument(
         "--clifford_block_builder",
         choices=("tapered", "physical"),
         default="tapered",
@@ -849,8 +1108,16 @@ if __name__ == "__main__":
         choices=("reference", "perturbation"),
         default="perturbation",
         help="K selection on CI backends: perturbation=one-shot PT (default, "
-             "no overlap wavefunction); reference=overlap ordering vs a DMRG "
-             "wavefunction. --backend dmrg always uses PT.",
+             "no overlap wavefunction); reference=overlap ordering vs a "
+             "reference wavefunction. --backend dmrg always uses PT.",
+    )
+    parser.add_argument(
+        "--overlap_reference",
+        choices=("fci", "dmrg"),
+        default="fci",
+        help="reference wavefunction for --coupled_energy_method reference: "
+             "fci reuses the parent FCI vector already solved for E_FCI "
+             "(default, exact); dmrg solves a separate MPS reference",
     )
     args = parser.parse_args()
     print_workflow_banner(
@@ -867,8 +1134,7 @@ if __name__ == "__main__":
         ),
     )
 
-    with open(args.input_data, "r") as fp:
-        input_data = json.load(fp)
+    input_data = load_oo_input(args.input_data)
 
     p = Path(input_data["molpath"])
     outname = args.outname or (
@@ -978,6 +1244,10 @@ if __name__ == "__main__":
         )
     print("sector solve_time_s", solve_time_s)
 
+    # D_max for the determinant backend too, so plots can key off one field.
+    out_data["sector_dimension_stats"] = sector_dimension_stats(sectors)
+    out_data["D_max"] = out_data["sector_dimension_stats"]["D_max"]
+
     sector_gs_energies = []
     for w, v in sector_eigs.items():
         sector_gs_energies.append(np.min(v[0]))
@@ -1017,20 +1287,27 @@ if __name__ == "__main__":
             print("PT coupled-energy did not converge within chemical precision")
 
     elif args.coupled_energy_method == "reference":
-        print("Calculating K via overlap ordering against DMRG wavefunction")
-        from src.dmrg_solver import DMRGConfig, get_dmrg_reference
-
-        _, refvec = get_dmrg_reference(
-            dumpdata,
-            store_dir=args.wavefunction_dir,
-            config=DMRGConfig(max_bond_dim=args.bond_dim),
-            n_threads=args.n_threads,
-            reuse=True,
+        overlap_reference = getattr(args, "overlap_reference", "fci")
+        print(
+            "Calculating K via overlap ordering against "
+            f"{overlap_reference.upper()} wavefunction"
         )
+        if overlap_reference == "dmrg":
+            from src.dmrg_solver import DMRGConfig, get_dmrg_reference
+
+            _, refvec = get_dmrg_reference(
+                dumpdata,
+                store_dir=args.wavefunction_dir,
+                config=DMRGConfig(max_bond_dim=args.bond_dim),
+                n_threads=args.n_threads,
+                reuse=True,
+            )
+        else:
+            _, refvec = get_fci(dumpdata, flatten=True)
         rotated_refvec = ffsim.apply_orbital_rotation(
             refvec, U, norb=moldata.norb, nelec=moldata.nelec
         )
-        out_data["overlap_reference"] = "dmrg"
+        out_data["overlap_reference"] = overlap_reference
 
         full_space_vectors = []
         for k, v in sectors.items():

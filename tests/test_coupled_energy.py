@@ -100,13 +100,15 @@ class CoupledEnergySanityTests(unittest.TestCase):
         self.assertGreaterEqual(result.K, 2)
 
         vecs = np.column_stack([c[2] for c in candidates])
-        k_min, e_coupled, converged, order = reference_coupled_energy_k(
+        k_min, e_coupled, converged, order, weights = reference_coupled_energy_k(
             lambda v: h @ v, vecs, psi_ref, e_exact, chemical_precision=1e-10
         )
         self.assertTrue(converged)
         self.assertEqual(k_min, result.K)
         self.assertAlmostEqual(e_coupled, e_exact, places=10)
         self.assertEqual(list(order[:k_min]), list(result.order_indices[:k_min]))
+        self.assertEqual(len(weights), vecs.shape[1])
+        self.assertGreater(float(np.sum(weights)), 0.0)
 
     def test_pt_ordering_ranks_coupled_state_first(self):
         h, _sectors, sector_data, _e_exact = _toy_hamiltonian_and_sectors()

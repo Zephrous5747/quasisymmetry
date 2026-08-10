@@ -61,6 +61,39 @@ def sector_data_from_gs_pairs(sectors_dict, sector_gs_pairs, full_dim: int):
     return sector_data
 
 
+def sector_dimension_stats(sectors_dict) -> dict:
+    """Exact max / aggregate determinant dimensions (PDF ``D_max``).
+
+    For a fixed exact-target filter already applied to ``sectors_dict``,
+    ``D_max = max_s dim(s)`` matches the PDF §13 definition of the largest
+    joint exact+approximate sector. ``total_dim`` is the sum over sectors
+    (legacy ``relevant_sectors_total_dim`` when restricted to K-used sectors).
+
+    Values may be index sequences (``len`` = dim) or integer dimensions.
+    """
+    dims: list[int] = []
+    for value in sectors_dict.values():
+        if isinstance(value, (int, np.integer)):
+            dims.append(int(value))
+        elif isinstance(value, dict) and "dimension" in value:
+            dims.append(int(value["dimension"]))
+        else:
+            dims.append(len(value))
+    if not dims:
+        return {
+            "D_max": 0,
+            "D_min": 0,
+            "n_sectors": 0,
+            "total_dim": 0,
+        }
+    return {
+        "D_max": int(max(dims)),
+        "D_min": int(min(dims)),
+        "n_sectors": int(len(dims)),
+        "total_dim": int(sum(dims)),
+    }
+
+
 def decoupled_energy_test(sectors_dict, sector_gs_pairs):
     """E_dec_min = min_s lambda_min(H(s))."""
     best_e = None
@@ -115,8 +148,9 @@ def reference_coupled_energy_k(
     Reference-overlap ordering + nested variational ``K``.
 
     ``full_space_vectors_cat`` columns are sector eigenstates. Returns
-    ``(K, e_coupled, converged, order_indices)`` where ``order_indices`` indexes
-    those columns in decreasing ``|<psi|Psi_ref>|^2`` order.
+    ``(K, e_coupled, converged, order_indices, reference_weights)`` where
+    ``order_indices`` indexes those columns in decreasing ``|<psi|Psi_ref>|^2``
+    order and ``reference_weights`` are the per-column overlap weights.
     """
     n = full_space_vectors_cat.shape[1]
     candidates = [
@@ -131,9 +165,10 @@ def reference_coupled_energy_k(
         block_size=block_size,
     )
     order = np.asarray(result.order_indices, dtype=int)
+    weights = np.asarray(result.reference_weights, dtype=float)
     if result.K is None:
-        return None, result.e_coupled, False, order
-    return result.K, result.e_coupled, result.converged, order
+        return None, result.e_coupled, False, order, weights
+    return result.K, result.e_coupled, result.converged, order, weights
 
 
 

@@ -23,6 +23,7 @@ Metrics K methods (``--coupled_energy_method``)
 from __future__ import annotations
 
 import argparse
+import sys
 
 REFERENCE_CHOICES = ("fci", "hf", "dmrg")
 METRICS_BACKEND_CHOICES = ("fci", "dmrg", "davidson")
@@ -55,8 +56,10 @@ OPTIMIZE_EPILOG = """
   positional when selecting.
 
   greedy     one-shot Kruskal over {seniority, quartet} (--candidates)
-  iterative  repeat Kruskal selection, warm-started OO, and external Clifford
-             canonicalization (--m_round); may accumulate weight>2 pullbacks
+  iterative  fixed-M NC-ranked LAS search with exact-parity quotienting,
+             warm-started OO, and Clifford frame update (complete N-r
+             ranked basis; --m_round is deprecated / ignored)
+
 
 examples
 --------
@@ -78,7 +81,8 @@ METRICS_EPILOG = """
 --coupled_energy_method (K selection; CI backends only)
 -------------------------------------------------------
   perturbation   one-shot PT ordering (default); needs only an energy target
-  reference      overlap ordering vs a DMRG wavefunction (loads Block2 GS)
+  reference      overlap ordering vs a reference wavefunction
+                 (--overlap_reference fci|dmrg; default fci)
 
   --backend dmrg always uses one-shot PT for K.
   --solver is an alias of --backend.
@@ -86,8 +90,9 @@ METRICS_EPILOG = """
 examples
 --------
   python metrics.py oo.json
+  python metrics.py oo.json --backend fci --coupled_energy_method reference --overlap_reference fci
   python metrics.py oo.json --backend davidson --coupled_energy_method perturbation
-  python metrics.py oo.json --coupled_energy_method reference --bond_dim 250
+  python metrics.py oo.json --coupled_energy_method reference --overlap_reference dmrg --bond_dim 250
   python metrics.py oo.json --backend dmrg --bond_dim 250 --penalty 30
 """
 
@@ -182,7 +187,92 @@ def add_greedy_select_args(parser: argparse.ArgumentParser) -> None:
         "--m_round",
         type=int,
         default=2,
-        help="operators per GF(2) frame round (--select iterative; default 2)",
+        help=(
+            "deprecated for --select iterative (fixed-M ranked scan ignores "
+            "m_round; kept for CLI compatibility, must be >= 1 if set)"
+        ),
+    )
+    parser.add_argument(
+        "--max_macroiterations",
+        type=int,
+        default=None,
+        help=(
+            "max discrete frame updates for --select iterative "
+            "(default: max(2*norb, 8))"
+        ),
+    )
+    parser.add_argument(
+        "--stable_span_iters",
+        type=int,
+        default=2,
+        help=(
+            "for --select iterative: consecutive macros where all five stop "
+            "conditions hold before stopping (default: 2)"
+        ),
+    )
+    parser.add_argument(
+        "--oo_stop_tol",
+        type=float,
+        default=1e-6,
+        help="iterative OO objective change tolerance |C^t-C^{t-1}|",
+    )
+    parser.add_argument(
+        "--oo_step_tol",
+        type=float,
+        default=1e-5,
+        help="iterative OO step tolerance ||x^t-x^{t-1}||_inf",
+    )
+    parser.add_argument(
+        "--rank_replace_tol",
+        type=float,
+        default=1e-4,
+        help=(
+            "iterative ranking: LAS cost-sum improvement below this is "
+            "'no meaningful replacement'"
+        ),
+    )
+    parser.add_argument(
+        "--disjoint_orbitals",
+        type=int,
+        choices=(0, 1),
+        default=1,
+        help=(
+            "for --select greedy with --n_singles/--n_quartets: 1=reject "
+            "overlapping orbital supports (default Mixed disjoint); "
+            "0=quota Mixed with GF(2) independence only (overlap allowed)"
+        ),
+    )
+    parser.add_argument(
+        "--exact_parity",
+        default=None,
+        help=(
+            "optional binary (r x norb) matrix file of exact parity rows E. "
+            "Endpoint/checklist STO-3G defaults write report PG rows "
+            "(H2O: Q_B1/Q_B2; N2: Q_pix/Q_piy/Q_u). Otherwise default is "
+            "all-ones total particle parity. Exact rows seed the GF(2) prior "
+            "for both Mixed and Iterative selection and are used for "
+            "Clifford tapering / sector dimensions in metrics."
+        ),
+    )
+    parser.add_argument(
+        "--exact_sector",
+        default=None,
+        help=(
+            "exact-sector eigenvalue label as an r-bit string (e.g. 0 or 01); "
+            "default picks the densest physical tapered sector"
+        ),
+    )
+    parser.add_argument(
+        "--iterative_reference",
+        choices=("exact_taper", "fci_rotate"),
+        default="fci_rotate",
+        metavar="{exact_taper,fci_rotate}",
+        help=(
+            "reference for iterative *ranking* scores: "
+            "fci_rotate=frozen rotated FCI/HF vector (default, same as mixed OO); "
+            "exact_taper=Route A ApproxGroundState in the exact Clifford sector. "
+            "Orbital optimization always uses fci_rotate."
+        ),
     )
     parser.add_argument(
         "--parity_output",
@@ -210,9 +300,30 @@ def resolve_select_n_sym(
     n_quartets: int | None = None,
 ) -> int | None:
     """Resolve effective ``n_sym`` after optional greedy quotas."""
+    if n_singles is None:
+        n_singles = _cli_flag_int("--n_singles")
+    if n_quartets is None:
+        n_quartets = _cli_flag_int("--n_quartets")
+    if n_sym is None:
+        n_sym = _cli_flag_int("--n_sym")
     if select == "greedy" and n_sym is None and n_singles is not None and n_quartets is not None:
         return int(n_singles) + int(n_quartets)
     return n_sym
+
+
+def _cli_flag_int(flag: str) -> int | None:
+    """Read ``--flag N`` from ``sys.argv`` (survives stale callers that omit kwargs)."""
+    argv = sys.argv
+    try:
+        index = argv.index(flag)
+    except ValueError:
+        return None
+    if index + 1 >= len(argv):
+        return None
+    try:
+        return int(argv[index + 1])
+    except ValueError:
+        return None
 
 
 def validate_greedy_cli_args(
@@ -232,6 +343,15 @@ def validate_greedy_cli_args(
 
     Callers typically wrap this with ``parser.error(str(exc))``.
     """
+    # Stale optimize_*.py may register --n_singles/--n_quartets but forget to
+    # forward them into this helper; recover from argv so quotas still work.
+    if n_singles is None:
+        n_singles = _cli_flag_int("--n_singles")
+    if n_quartets is None:
+        n_quartets = _cli_flag_int("--n_quartets")
+    if n_sym is None:
+        n_sym = _cli_flag_int("--n_sym")
+
     if select in SELECT_POOL_MODES:
         has_quota = n_singles is not None or n_quartets is not None
         if has_quota:

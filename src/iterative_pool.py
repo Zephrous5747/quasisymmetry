@@ -1,32 +1,35 @@
-"""Interleaved GF(2)/Clifford pool extension and orbital optimization.
+"""Iterative NC-ranked fixed-M LAS search with exact-parity quotienting.
 
-Each round greedily picks ``m_round`` independent weight-≤2 operators in the
-current GF(2) parity frame (seniorities + quartets), pulls them back to the
-original orbital basis, accumulates an independent set, optimizes the orbital
-rotation for that accumulated pool, then uses the external Clifford
-implementation to map the selected products to canonical single-Z axes.  The
-next round's ``{Z_i, Z_i Z_j}`` pool can consequently pull back to higher-order
-products in the original basis.
+Implements the revised procedure (see ``.cursor/memory/iterative_nc_ranked_las.md``):
 
-Scoring uses the same per-row callable as one-shot greedy (NC or variance).
+Each macroiteration ranks all current-frame single-``Z`` and pair products by a
+state-specific cost (NC / variance), accepts rows that enlarge
+``span(E cup G)`` over GF(2), retains the first ``M`` accepted rows as LASs,
+and continues until a complete quotient basis of ``N - r`` rows is built.  The
+remaining ranked rows become auxiliary axes of the next Clifford frame.  Exact
+parities (default: all-ones total particle parity) never consume the LAS budget.
+
+This replaces the older growing-pool algorithm (add ``m_round`` generators until
+raw rank ``M``, never drop earlier choices).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Sequence
 
 import numpy as np
 from openfermion import QubitOperator
 
 from external_imports import Clifford
-from src.gf2_utils import gf2_int_rref
-from src.greedy_selection import (
-    GreedySelectionResult,
-    select_senquart_kruskal_from_cost_matrix,
-)
+from src.exact_parity import default_exact_masks
+from src.gf2_utils import gf2_int_in_span, gf2_int_rref, gf2_int_try_add_to_span
+from src.greedy_selection import GreedySelectionResult
+from src.parity_rank import effective_parity_rank
 
-SELECTION_RULE_ITERATIVE = "gf2_iterative_pool_extension"
+SELECTION_RULE_ITERATIVE = "nc_ranked_las_fixed_m"
+# Back-compat alias for older JSON / scripts.
+SELECTION_RULE_ITERATIVE_LEGACY = "gf2_iterative_pool_extension"
 
 
 def orbitals_from_mask(mask: int) -> tuple[int, ...]:
@@ -68,14 +71,21 @@ def parity_rows_from_masks(masks: Iterable[int], norb: int) -> np.ndarray:
     return np.asarray(rows, dtype=int)
 
 
-def gf2_rank_masks(masks: Iterable[int]) -> int:
+def gf2_rank_masks(masks: Iterable[int], n_bits: int | None = None) -> int:
     """GF(2) rank of packed parity-support masks."""
     rows = [int(mask) for mask in masks if int(mask)]
     if not rows:
         return 0
-    n_bits = max(row.bit_length() for row in rows)
-    rref, _ = gf2_int_rref(rows, n_bits)
+    width = int(n_bits) if n_bits is not None else max(row.bit_length() for row in rows)
+    rref, _ = gf2_int_rref(rows, width)
     return len(rref)
+
+
+def span_key(masks: Iterable[int], n_bits: int) -> tuple[int, ...]:
+    """Canonical RREF signature of a GF(2) span (for stopping / cycle checks)."""
+    rows = [int(m) for m in masks if int(m)]
+    rref, _ = gf2_int_rref(rows, n_bits)
+    return tuple(sorted(int(r) for r in rref))
 
 
 def complete_gf2_basis(selected_masks: Iterable[int], n: int) -> list[int]:
@@ -85,11 +95,11 @@ def complete_gf2_basis(selected_masks: Iterable[int], n: int) -> list[int]:
         value = int(mask)
         if value == 0:
             continue
-        if gf2_rank_masks([*basis, value]) > len(basis):
+        if gf2_rank_masks([*basis, value], n_bits=n) > len(basis):
             basis.append(value)
     for bit in range(n):
         candidate = 1 << bit
-        if gf2_rank_masks([*basis, candidate]) > len(basis):
+        if gf2_rank_masks([*basis, candidate], n_bits=n) > len(basis):
             basis.append(candidate)
         if len(basis) >= n:
             break
@@ -134,25 +144,38 @@ class IterativeSelectionResult:
         *,
         cost_function: str,
         parity_output: str,
-        m_round: int,
+        m_round: int | None = None,
     ) -> dict:
         """JSON-serializable selection record for OO output."""
-        return {
+        out = {
             "selection": "iterative",
             "selection_rule": SELECTION_RULE_ITERATIVE,
             "candidates": "senquart_iterative",
             "cost_function": cost_function,
             "n_sym": int(self.parity_matrix.shape[0]),
-            "m_round": int(m_round),
+            "M": int(self.history.get("M", self.parity_matrix.shape[0])),
             "selected_costs": [float(c) for c in self.selected_costs],
             "accumulated_masks": [int(m) for m in self.accumulated_masks],
             "accumulated_orbitals": [
                 list(orbitals_from_mask(m)) for m in self.accumulated_masks
             ],
+            "las_masks": [int(m) for m in self.history.get("las_masks", self.accumulated_masks)],
+            "auxiliary_masks": [int(m) for m in self.history.get("auxiliary_masks", [])],
+            "ranked_basis_masks": [
+                int(m) for m in self.history.get("ranked_basis_masks", [])
+            ],
+            "exact_masks": [int(m) for m in self.history.get("exact_masks", [])],
+            "exact_rank": self.history.get("exact_rank"),
+            "exact_sector": self.history.get("exact_sector"),
             "rounds": self.history.get("rounds", []),
             "gf2_rank": int(self.history.get("gf2_rank", self.parity_matrix.shape[0])),
+            "M_eff": self.history.get("M_eff"),
+            "stop_reason": self.history.get("stop_reason"),
             "parity_output": parity_output,
         }
+        if m_round is not None:
+            out["m_round_deprecated"] = int(m_round)
+        return out
 
 
 def cost_matrix_in_frame(
@@ -170,6 +193,129 @@ def cost_matrix_in_frame(
             row = mask_to_parity_row(frame.mask_for_quartet((p, q)), n)
             matrix[p, q] = float(score_row(row))
     return matrix
+
+
+def _frame_candidates(
+    frame: Gf2ParityFrame,
+    cost_matrix: np.ndarray,
+) -> list[dict[str, Any]]:
+    """Enumerate singles/pairs with costs (stable order for tie-breaks)."""
+    n = frame.n_spatial
+    cands: list[dict[str, Any]] = []
+    for i in range(n):
+        cands.append(
+            {
+                "kind": "single",
+                "frame_indices": (i,),
+                "mask": int(frame.mask_for_single(i)),
+                "cost": float(cost_matrix[i, i]),
+                "order_key": (i, i),
+            }
+        )
+    for p in range(n):
+        for q in range(p + 1, n):
+            cands.append(
+                {
+                    "kind": "quartet",
+                    "frame_indices": (p, q),
+                    "mask": int(frame.mask_for_quartet((p, q))),
+                    "cost": float(cost_matrix[p, q]),
+                    "order_key": (p, q),
+                }
+            )
+    # Ascending NC; deterministic tie-break by frame indices.
+    cands.sort(key=lambda c: (c["cost"], c["order_key"]))
+    return cands
+
+
+def ranked_quotient_scan(
+    frame: Gf2ParityFrame,
+    cost_matrix: np.ndarray,
+    *,
+    M: int,
+    exact_masks: Sequence[int],
+) -> dict[str, Any]:
+    """NC-ranked scan with exact-parity quotient independence.
+
+    Returns LAS pool (first ``M`` accepted), auxiliary rows, full ranked
+    quotient basis ``B`` of size ``N - r``, and a decision trace.
+    """
+    n = frame.n_spatial
+    exact = [int(m) for m in exact_masks if int(m)]
+    rref_exact, _ = gf2_int_rref(exact, n)
+    r = len(rref_exact)
+    if M < 0 or M > n - r:
+        raise ValueError(f"M={M} out of range for N={n}, r={r} (need 0 <= M <= N-r)")
+
+    target = n - r
+    accepted: list[int] = []
+    accepted_costs: list[float] = []
+    rref = list(rref_exact)
+    trace: list[dict[str, Any]] = []
+
+    for cand in _frame_candidates(frame, cost_matrix):
+        mask = int(cand["mask"])
+        if mask == 0:
+            trace.append({**cand, "event": "reject", "reason": "identity"})
+            continue
+        new_rref = gf2_int_try_add_to_span(mask, rref, n)
+        if new_rref is None:
+            if gf2_int_in_span(mask, rref_exact):
+                reason = "exact_parity"
+            else:
+                reason = "gf2_dependent_or_exact_dressed"
+            trace.append(
+                {
+                    "event": "reject",
+                    "reason": reason,
+                    "kind": cand["kind"],
+                    "frame_indices": list(cand["frame_indices"]),
+                    "support": list(orbitals_from_mask(mask)),
+                    "cost": cand["cost"],
+                    "mask": mask,
+                }
+            )
+            continue
+
+        rref = new_rref
+        accepted.append(mask)
+        accepted_costs.append(float(cand["cost"]))
+        event = "accept_las" if len(accepted) <= M else "accept_auxiliary"
+        trace.append(
+            {
+                "event": event,
+                "kind": cand["kind"],
+                "frame_indices": list(cand["frame_indices"]),
+                "support": list(orbitals_from_mask(mask)),
+                "cost": cand["cost"],
+                "mask": mask,
+                "accepted_index": len(accepted) - 1,
+            }
+        )
+        if len(accepted) >= target:
+            break
+
+    if len(accepted) < target:
+        raise RuntimeError(
+            f"Ranked quotient scan accepted only {len(accepted)} of {target} "
+            f"rows (N={n}, r={r}, M={M})."
+        )
+
+    las = accepted[:M]
+    aux = accepted[M:]
+    return {
+        "exact_masks": exact,
+        "exact_rank": r,
+        "ranked_basis_masks": accepted,
+        "las_masks": las,
+        "auxiliary_masks": aux,
+        "las_costs": accepted_costs[:M],
+        "ranked_costs": accepted_costs,
+        "selection_trace": trace,
+        "N": n,
+        "M": M,
+        "r": r,
+    }
 
 
 def _z_operator_from_mask(mask: int) -> QubitOperator:
@@ -199,11 +345,8 @@ def clifford_frame_from_masks(
     """Canonicalize selected Z products with the external Clifford utility.
 
     The Clifford is synthesized on an abstract ``norb``-qubit spatial-parity
-    register.  This is intentional: applying it physically to the
-    Jordan--Wigner Hamiltonian would generally destroy the molecular
-    Hamiltonian form expected by the orbital optimizer.  Pulling canonical
-    Z-axis candidates back with ``inverse_transform`` is exactly equivalent
-    for NC/variance scoring and keeps orbital optimization in its native
+    register.  Pulling canonical Z-axis candidates back with
+    ``inverse_transform`` keeps orbital optimization in its native
     representation.
     """
     masks = [int(mask) for mask in selected_masks]
@@ -216,7 +359,7 @@ def clifford_frame_from_masks(
             "factor_descriptions": [],
             "permutation": list(range(norb)),
         }
-    if gf2_rank_masks(masks) != len(masks):
+    if gf2_rank_masks(masks, n_bits=norb) != len(masks):
         raise ValueError("Clifford frame requires independent selected masks.")
 
     clifford = Clifford.from_symmetries(
@@ -239,7 +382,7 @@ def clifford_frame_from_masks(
         _mask_from_z_operator(clifford.inverse_transform(axis), norb)
         for axis in canonical_axes
     ]
-    if gf2_rank_masks(basis_rows) != norb:
+    if gf2_rank_masks(basis_rows, n_bits=norb) != norb:
         raise RuntimeError("External Clifford pullback is not a full GF(2) basis.")
     if basis_rows[: len(masks)] != masks:
         raise RuntimeError(
@@ -264,7 +407,10 @@ def select_iterative_pool(
     n_sym: int,
     score_row: Callable[[np.ndarray], float],
     *,
-    m_round: int = 2,
+    m_round: int | None = None,
+    max_macroiterations: int | None = None,
+    exact_masks: Sequence[int] | None = None,
+    exact_sector: Sequence[int] | None = None,
     score_row_at: Callable[[np.ndarray, np.ndarray | None], float] | None = None,
     optimize_pool: Callable[
         [np.ndarray, np.ndarray | None, int],
@@ -272,30 +418,42 @@ def select_iterative_pool(
     ]
     | None = None,
     initial_parameters: np.ndarray | None = None,
+    stable_span_iters: int = 2,
+    oo_stop_tol: float = 1e-6,
+    oo_step_tol: float = 1e-5,
+    rank_replace_tol: float = 1e-4,
 ) -> IterativeSelectionResult:
-    """Run select -> orbital-optimize -> Clifford-canonicalize rounds.
+    """Fixed-``M`` NC-ranked LAS search with exact-parity quotienting.
 
     Parameters
     ----------
     norb:
-        Number of spatial orbitals (ambient GF(2) dimension).
+        Ambient GF(2) dimension ``N`` (spatial orbitals).
     n_sym:
-        Target number of independent generators (``m_total``).
-    score_row:
-        Additive cost of a binary parity row (same metric as one-shot greedy).
+        LAS budget ``M`` (not raw growing-pool size).
+    score_row / score_row_at:
+        Candidate costs (NC or variance); lower is better.
     m_round:
-        Operators requested per frame round (default 2).
-    score_row_at:
-        Optional dynamic scorer receiving the current optimized parameters.
-        When omitted, the one-argument ``score_row`` is used.
+        Deprecated (ignored). Kept so older CLI call sites do not break.
+    max_macroiterations:
+        Cap on discrete frame updates (default ``max(2*N, 8)``).
+    exact_masks:
+        Exact parity rows ``E``; default all-ones total particle parity.
+    exact_sector:
+        Optional exact eigenvalue label recorded in history.
     optimize_pool:
-        Optional callback that optimizes the accumulated parity matrix from the
-        previous parameters and returns ``(new_parameters, JSON metadata)``.
-        CLI iterative mode supplies this callback, so optimization occurs after
-        every selection round.
+        Optional OO callback on the current LAS parity matrix.
+    stable_span_iters:
+        Stop after this many consecutive macroiterations where all five
+        document stop conditions hold.
+    oo_stop_tol / oo_step_tol / rank_replace_tol:
+        Tolerances for orbital objective, orbital step, and ranking
+        replacement significance.
     """
-    if n_sym < 0 or m_round < 1:
-        raise ValueError("n_sym must be non-negative and m_round >= 1")
+    if m_round is not None and int(m_round) < 1:
+        raise ValueError("m_round must be >= 1 when provided (deprecated flag)")
+    if n_sym < 0:
+        raise ValueError("n_sym (M) must be non-negative")
     if n_sym == 0:
         return IterativeSelectionResult(
             parity_matrix=np.zeros((0, norb), dtype=int),
@@ -303,11 +461,23 @@ def select_iterative_pool(
             selected_costs=(),
             history={
                 "selection_rule": SELECTION_RULE_ITERATIVE,
+                "M": 0,
                 "m_total": 0,
-                "m_round": int(m_round),
                 "accumulated_masks": [],
+                "las_masks": [],
+                "auxiliary_masks": [],
+                "ranked_basis_masks": [],
+                "exact_masks": list(exact_masks or default_exact_masks(norb)),
+                "exact_rank": gf2_rank_masks(
+                    exact_masks or default_exact_masks(norb), n_bits=norb
+                ),
+                "exact_sector": (
+                    None if exact_sector is None else [int(b) for b in exact_sector]
+                ),
                 "rounds": [],
                 "gf2_rank": 0,
+                "M_eff": 0,
+                "stop_reason": "empty_M",
             },
             optimized_parameters=(
                 None
@@ -315,102 +485,272 @@ def select_iterative_pool(
                 else np.asarray(initial_parameters, dtype=float).copy()
             ),
         )
-    if n_sym > norb:
-        raise ValueError(f"Cannot select n_sym={n_sym} on n={norb} orbitals")
+
+    exact = list(exact_masks) if exact_masks is not None else list(default_exact_masks(norb))
+    r = gf2_rank_masks(exact, n_bits=norb)
+    if n_sym > norb - r:
+        raise ValueError(
+            f"Cannot select M={n_sym} LASs on N={norb} with exact rank r={r} "
+            f"(need M <= N-r={norb - r})"
+        )
+
+    max_macro = (
+        int(max_macroiterations)
+        if max_macroiterations is not None
+        else max(2 * norb, 8)
+    )
+    if max_macro < 1:
+        raise ValueError("max_macroiterations must be >= 1")
+    if int(stable_span_iters) < 1:
+        raise ValueError("stable_span_iters must be >= 1")
 
     frame = Gf2ParityFrame.identity(norb)
-    accumulated: list[int] = []
-    selected_costs: list[float] = []
+    las: list[int] = []
+    las_costs: list[float] = []
+    aux: list[int] = []
+    ranked_B: list[int] = []
     rounds: list[dict[str, Any]] = []
     current_parameters = (
         None
         if initial_parameters is None
         else np.asarray(initial_parameters, dtype=float).copy()
     )
+    prev_span_G: tuple[int, ...] | None = None
+    prev_span_B: tuple[int, ...] | None = None
+    prev_cost: float | None = None
+    prev_x: np.ndarray | None = None
+    prev_las_cost_sum: float | None = None
+    prev_las_key: tuple[int, ...] | None = None
+    consecutive_all = 0
+    seen_cycles: set[tuple[tuple[int, ...], tuple[int, ...]]] = set()
+    best: dict[str, Any] | None = None
+    stop_reason = "max_macroiterations"
 
-    while gf2_rank_masks(accumulated) < n_sym:
-        need = n_sym - gf2_rank_masks(accumulated)
-        take = min(int(m_round), need)
-        # After canonicalization, accumulated generators are frame axes 0..rank-1.
-        rank = gf2_rank_masks(accumulated)
-        prior_singles = tuple(range(rank))
+    for macro in range(max_macro):
+        # Step 3: OO on current LAS (skipped on first pass if empty).
+        if las and optimize_pool is not None:
+            parity_matrix = parity_rows_from_masks(las, norb)
+            current_parameters, optimization_pre = optimize_pool(
+                parity_matrix,
+                current_parameters,
+                macro,
+            )
+            current_parameters = np.asarray(current_parameters, dtype=float).copy()
+        else:
+            optimization_pre = None
+
         if score_row_at is None:
             round_scorer = score_row
         else:
-            round_scorer = lambda row: score_row_at(row, current_parameters)
+            round_scorer = lambda row, _p=current_parameters: score_row_at(row, _p)
+
         cost_matrix = cost_matrix_in_frame(frame, round_scorer)
-        singles, quartets, round_costs = select_senquart_kruskal_from_cost_matrix(
-            cost_matrix, take, prior_singles=prior_singles
+        scan = ranked_quotient_scan(
+            frame,
+            cost_matrix,
+            M=int(n_sym),
+            exact_masks=exact,
         )
+        new_las = [int(m) for m in scan["las_masks"]]
+        new_aux = [int(m) for m in scan["auxiliary_masks"]]
+        new_B = [int(m) for m in scan["ranked_basis_masks"]]
+        new_costs = [float(c) for c in scan["las_costs"]]
+        las_cost_sum = float(sum(new_costs))
+        las_key = tuple(sorted(new_las))
 
-        round_masks: list[int] = []
-        for orbital in singles:
-            round_masks.append(frame.mask_for_single(int(orbital)))
-        for edge in quartets:
-            round_masks.append(frame.mask_for_quartet(edge))
+        span_G = span_key([*exact, *new_las], norb)
+        span_B = span_key(new_B, norb)
 
-        added: list[int] = []
-        added_costs: list[float] = []
-        for mask, cost in zip(round_masks, round_costs):
-            if gf2_rank_masks([*accumulated, mask]) > len(accumulated):
-                accumulated.append(int(mask))
-                added.append(int(mask))
-                added_costs.append(float(cost))
-                selected_costs.append(float(cost))
+        # --- five document stop conditions ---
+        cond_span_G = prev_span_G is not None and span_G == prev_span_G
+        cond_span_B = prev_span_B is not None and span_B == prev_span_B
+
+        if optimize_pool is None:
+            cond_oo_obj = True
+            cond_oo_step = True
+            oo_obj_delta = None
+            oo_step_inf = None
+        elif optimization_pre is None or prev_cost is None or prev_x is None:
+            cond_oo_obj = False
+            cond_oo_step = False
+            oo_obj_delta = None
+            oo_step_inf = None
+        else:
+            cost_now = float(optimization_pre["cost_after"])
+            oo_obj_delta = abs(cost_now - float(prev_cost))
+            cond_oo_obj = oo_obj_delta < float(oo_stop_tol)
+            x_now = np.asarray(optimization_pre["parameters_after"], dtype=float)
+            oo_step_inf = float(np.max(np.abs(x_now - prev_x)))
+            cond_oo_step = oo_step_inf < float(oo_step_tol)
+
+        # Ranking: meaningful cheaper LAS set resets; tiny change = stable.
+        if prev_las_key is None:
+            cond_ranking = False
+            ranking_delta = None
+        elif las_key == prev_las_key or span_G == prev_span_G:
+            ranking_delta = (
+                None
+                if prev_las_cost_sum is None
+                else abs(las_cost_sum - float(prev_las_cost_sum))
+            )
+            cond_ranking = True
+        else:
+            ranking_delta = float(prev_las_cost_sum) - las_cost_sum
+            # Meaningful improvement (cheaper by more than tol) → not stable.
+            cond_ranking = ranking_delta < float(rank_replace_tol)
+
+        stop_checklist = {
+            "span_G": bool(cond_span_G),
+            "span_B": bool(cond_span_B),
+            "oo_obj": bool(cond_oo_obj),
+            "oo_step": bool(cond_oo_step),
+            "ranking": bool(cond_ranking),
+            "oo_obj_delta": oo_obj_delta,
+            "oo_step_inf": oo_step_inf,
+            "ranking_delta": ranking_delta,
+            "las_cost_sum": las_cost_sum,
+        }
+        all_five = all(
+            stop_checklist[k]
+            for k in ("span_G", "span_B", "oo_obj", "oo_step", "ranking")
+        )
+        if all_five:
+            consecutive_all += 1
+        else:
+            consecutive_all = 0
+
+        # Full frame for Clifford: exact rows then ranked quotient basis B.
+        frame_masks = [*exact, *new_B]
+        if gf2_rank_masks(frame_masks, n_bits=norb) != norb:
+            frame_masks = complete_gf2_basis(frame_masks, norb)
+
+        frame, clifford_metadata = clifford_frame_from_masks(frame_masks, norb)
 
         round_record: dict[str, Any] = {
-            "m_requested": take,
-            "prior_singles": list(prior_singles),
-            "singles": list(singles),
-            "quartets": [list(edge) for edge in quartets],
-            "masks": added,
-            "orbitals": [list(orbitals_from_mask(mask)) for mask in added],
-            "additive_cost": float(sum(round_costs)),
-            "selected_costs": added_costs,
-            "accumulated_rank": gf2_rank_masks(accumulated),
+            "macroiteration": macro,
+            "M": int(n_sym),
+            "r": int(scan["r"]),
+            "exact_masks": [int(m) for m in exact],
+            "las_masks": new_las,
+            "auxiliary_masks": new_aux,
+            "ranked_basis_masks": new_B,
+            "las_orbitals": [list(orbitals_from_mask(m)) for m in new_las],
+            "auxiliary_orbitals": [list(orbitals_from_mask(m)) for m in new_aux],
+            "selected_costs": new_costs,
+            "additive_cost": las_cost_sum,
+            "selection_trace": scan["selection_trace"],
+            "span_key": list(span_G),
+            "span_B_key": list(span_B),
+            "stable_span_count": consecutive_all,
+            "stop_checklist": stop_checklist,
+            "frame_basis_rows": [int(x) for x in frame.basis_rows],
+            "clifford": clifford_metadata,
         }
+        if optimization_pre is not None:
+            round_record["optimization"] = optimization_pre
 
-        if not added:
-            raise RuntimeError(
-                "Iterative selection made no GF(2) progress; cannot reach "
-                f"n_sym={n_sym}."
-            )
-
-        if optimize_pool is not None:
-            parity_matrix = parity_rows_from_masks(accumulated, norb)
-            current_parameters, optimization = optimize_pool(
-                parity_matrix,
-                current_parameters,
-                len(rounds),
-            )
-            current_parameters = np.asarray(current_parameters, dtype=float).copy()
-            round_record["optimization"] = optimization
-
-        frame, clifford_metadata = clifford_frame_from_masks(accumulated, norb)
-        round_record["clifford"] = clifford_metadata
+        las = new_las
+        las_costs = new_costs
+        aux = new_aux
+        ranked_B = new_B
         rounds.append(round_record)
 
-    # Truncate to exact n_sym if a round overshot (should not with take=need).
-    if len(accumulated) > n_sym:
-        accumulated = accumulated[:n_sym]
-        selected_costs = selected_costs[:n_sym]
+        # Track best-so-far by sum of LAS costs (heuristic).
+        if best is None or las_cost_sum < float(best["score"]):
+            best = {
+                "score": las_cost_sum,
+                "las": list(las),
+                "costs": list(las_costs),
+                "aux": list(aux),
+                "ranked_B": list(ranked_B),
+                "parameters": (
+                    None
+                    if current_parameters is None
+                    else np.asarray(current_parameters, dtype=float).copy()
+                ),
+            }
 
-    parity_matrix = parity_rows_from_masks(accumulated, norb)
+        cycle_key = (span_G, span_B)
+        # Persistence of the same span is not a cycle; only a return after leaving.
+        if cycle_key in seen_cycles and (
+            not rounds[:-1]
+            or (
+                tuple(rounds[-2].get("span_key", [])),
+                tuple(rounds[-2].get("span_B_key", [])),
+            )
+            != cycle_key
+        ):
+            stop_reason = "cycle"
+            if best is not None:
+                las = list(best["las"])
+                las_costs = list(best["costs"])
+                aux = list(best["aux"])
+                ranked_B = list(best["ranked_B"])
+                if best["parameters"] is not None:
+                    current_parameters = np.asarray(best["parameters"], dtype=float)
+            break
+        seen_cycles.add(cycle_key)
+
+        if consecutive_all >= int(stable_span_iters) and macro > 0:
+            stop_reason = "stable_five"
+            break
+
+        # Advance previous-state trackers for the next macro.
+        prev_span_G = span_G
+        prev_span_B = span_B
+        prev_las_cost_sum = las_cost_sum
+        prev_las_key = las_key
+        if optimization_pre is not None:
+            prev_cost = float(optimization_pre["cost_after"])
+            prev_x = np.asarray(optimization_pre["parameters_after"], dtype=float)
+
+    # Final OO on retained LAS after last discrete update.
+    if las and optimize_pool is not None:
+        parity_matrix = parity_rows_from_masks(las, norb)
+        current_parameters, optimization_final = optimize_pool(
+            parity_matrix,
+            current_parameters,
+            len(rounds),
+        )
+        current_parameters = np.asarray(current_parameters, dtype=float).copy()
+        if rounds:
+            rounds[-1]["optimization_final"] = optimization_final
+
+    meff = effective_parity_rank(
+        parity_rows_from_masks(las, norb),
+        exact_masks=exact,
+    )["M_eff"]
+
     history: dict[str, Any] = {
         "selection_rule": SELECTION_RULE_ITERATIVE,
+        "M": int(n_sym),
         "m_total": int(n_sym),
-        "m_round": int(m_round),
-        "accumulated_masks": [int(mask) for mask in accumulated],
-        "accumulated_orbitals": [
-            list(orbitals_from_mask(mask)) for mask in accumulated
-        ],
+        "max_macroiterations": max_macro,
+        "stable_span_iters": int(stable_span_iters),
+        "oo_stop_tol": float(oo_stop_tol),
+        "oo_step_tol": float(oo_step_tol),
+        "rank_replace_tol": float(rank_replace_tol),
+        "m_round_deprecated": None if m_round is None else int(m_round),
+        "exact_masks": [int(m) for m in exact],
+        "exact_rank": r,
+        "exact_sector": (
+            None if exact_sector is None else [int(b) for b in exact_sector]
+        ),
+        "las_masks": [int(m) for m in las],
+        "auxiliary_masks": [int(m) for m in aux],
+        "ranked_basis_masks": [int(m) for m in ranked_B],
+        "accumulated_masks": [int(m) for m in las],
+        "accumulated_orbitals": [list(orbitals_from_mask(m)) for m in las],
         "rounds": rounds,
-        "gf2_rank": gf2_rank_masks(accumulated),
+        "gf2_rank": gf2_rank_masks(las, n_bits=norb),
+        "M_eff": meff,
+        "best_score": None if best is None else best["score"],
+        "stop_reason": stop_reason,
     }
     return IterativeSelectionResult(
-        parity_matrix=np.asarray(parity_matrix, dtype=int),
-        accumulated_masks=tuple(int(m) for m in accumulated),
-        selected_costs=tuple(selected_costs),
+        parity_matrix=parity_rows_from_masks(las, norb),
+        accumulated_masks=tuple(int(m) for m in las),
+        selected_costs=tuple(float(c) for c in las_costs),
         history=history,
         optimized_parameters=current_parameters,
     )
@@ -422,4 +762,5 @@ def as_greedy_result(result: IterativeSelectionResult) -> GreedySelectionResult:
         parity_matrix=result.parity_matrix,
         selected_indices=tuple(range(result.parity_matrix.shape[0])),
         selected_costs=result.selected_costs,
+        selection_rule=SELECTION_RULE_ITERATIVE,
     )

@@ -39,6 +39,7 @@ from src.greedy_selection import (
     write_parity_matrix,
 )
 from src.iterative_pool import select_iterative_pool
+from src.exact_parity import resolve_exact_masks
 from src.orbital_rotation import n_params, resolve_orbital_rotation
 from src.results_table import append_result_row
 from src.workflow_cli import (
@@ -154,6 +155,7 @@ def _run_optimize(args) -> None:
                     _score_row,
                     int(args.n_singles),
                     int(args.n_quartets),
+                    disjoint_orbitals=bool(getattr(args, "disjoint_orbitals", 1)),
                 )
             else:
                 print(
@@ -230,10 +232,19 @@ def _run_optimize(args) -> None:
                 solver.n_sites,
                 args.n_sym,
                 _score_row,
-                m_round=args.m_round,
                 score_row_at=_score_row_at,
                 optimize_pool=_optimize_pool,
                 initial_parameters=x0,
+                exact_masks=resolve_exact_masks(
+                    solver.n_sites,
+                    exact_parity_path=getattr(args, "exact_parity", None),
+                ),
+                max_macroiterations=getattr(args, "max_macroiterations", None),
+                stable_span_iters=int(getattr(args, "stable_span_iters", 2)),
+                oo_stop_tol=float(getattr(args, "oo_stop_tol", 1e-6)),
+                oo_step_tol=float(getattr(args, "oo_step_tol", 1e-5)),
+                rank_replace_tol=float(getattr(args, "rank_replace_tol", 1e-4)),
+                m_round=args.m_round,
             )
             iterative_res = round_results[-1]
             x0 = np.asarray(selection.optimized_parameters, dtype=float)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from itertools import combinations
 from math import comb
 
@@ -130,31 +131,188 @@ class TestGreedySelect:
 
 class TestSenquartQuota:
     def test_fills_quota_counts(self):
-        norb = 5
-        # Prefer cheap singles 0,1,2 then cheap quartets 0-3, 1-4.
+        norb = 7
+
         def score_row(row: np.ndarray) -> float:
             support = np.flatnonzero(row)
             if support.size == 1:
-                return float(support[0] + 1)  # 1,2,3,4,5
+                return float(support[0] + 1)
             p, q = int(support[0]), int(support[1])
             return 10.0 + float(p) + 0.1 * float(q)
 
         result = select_senquart_quota(norb, score_row, n_singles=3, n_quartets=2)
-        assert result.selection_rule == "senquart_quota"
+        assert result.selection_rule == "senquart_quota_disjoint"
         assert result.n_singles == 3
         assert result.n_quartets == 2
-        assert result.singles == (0, 1, 2)
-        assert result.quartets == ((0, 3), (0, 4)) or len(result.quartets) == 2
         assert len(result.singles) == 3
         assert len(result.quartets) == 2
         assert result.parity_matrix.shape == (5, norb)
         assert _is_independent(result.parity_matrix)
+        used: set[int] = set(result.singles)
+        for p, q in result.quartets:
+            assert p not in used and q not in used
+            used.add(p)
+            used.add(q)
         meta = result.metadata(
             candidates="senquart", cost_function="variance", parity_output="p.txt"
         )
-        assert meta["selection_rule"] == "senquart_quota"
+        assert meta["selection_rule"] == "senquart_quota_disjoint"
         assert meta["n_singles"] == 3
         assert meta["n_quartets"] == 2
+
+    def test_forbids_orbital_overlap(self):
+        norb = 5
+
+        def score_row(row: np.ndarray) -> float:
+            support = np.flatnonzero(row)
+            if support.size == 1:
+                # Prefer single 0, then 1.
+                return float(support[0])
+            p, q = int(support[0]), int(support[1])
+            # Cheapest quartet overlaps orbital 0; next is disjoint.
+            if (p, q) == (0, 2):
+                return 10.0
+            if (p, q) == (3, 4):
+                return 11.0
+            return 20.0 + float(p) + float(q)
+
+        result = select_senquart_quota(norb, score_row, n_singles=1, n_quartets=1)
+        assert result.singles == (0,)
+        assert result.quartets == ((3, 4),)
+        assert (0, 2) not in result.quartets
+
+    def test_rejects_exact_span_candidates(self):
+        """LAS must enlarge span(E); exact-dressed generators are skipped."""
+        norb = 5
+        # Exact: orbital 0 seniority.
+        exact = (1 << 0,)
+
+        def score_row(row: np.ndarray) -> float:
+            support = np.flatnonzero(row)
+            if support.size == 1:
+                # Prefer exact-dressed single 0 first, then 1, 2.
+                return float(support[0])
+            p, q = int(support[0]), int(support[1])
+            return 10.0 + float(p) + 0.1 * float(q)
+
+        result = select_senquart_quota(
+            norb,
+            score_row,
+            n_singles=2,
+            n_quartets=1,
+            disjoint_orbitals=True,
+            exact_masks=exact,
+        )
+        assert 0 not in result.singles
+        packed = gf2_matrix_to_int_rows(result.parity_matrix)
+        rref_e, _ = gf2_int_rref(list(exact), norb)
+        rref_u, _ = gf2_int_rref([*exact, *packed], norb)
+        assert len(rref_u) == len(rref_e) + len(packed)
+
+    def test_h2o_disjoint_independent_of_sto3g_exact(self):
+        from src.sto3g_exact_symmetries import sto3g_exact_masks
+
+        norb = 7
+        exact = sto3g_exact_masks("h2o")
+
+        def score_row(row: np.ndarray) -> float:
+            support = np.flatnonzero(row)
+            if support.size == 1:
+                return float(support[0] + 1)
+            p, q = int(support[0]), int(support[1])
+            return 10.0 + float(p) + 0.1 * float(q)
+
+        result = select_senquart_quota(
+            norb,
+            score_row,
+            n_singles=3,
+            n_quartets=2,
+            disjoint_orbitals=True,
+            exact_masks=exact,
+        )
+        packed = gf2_matrix_to_int_rows(result.parity_matrix)
+        rref_e, _ = gf2_int_rref(list(exact), norb)
+        rref_u, _ = gf2_int_rref([*exact, *packed], norb)
+        assert len(rref_u) == len(rref_e) + result.parity_matrix.shape[0]
+        assert result.parity_matrix.shape == (5, norb)
+
+    def test_h2o_singles_before_cheap_quartets_with_exact(self):
+        """PG-adapted NC can rank quartets cheaper than singles; still fill 3+2."""
+        from src.sto3g_exact_symmetries import sto3g_exact_masks
+
+        norb = 7
+        exact = sto3g_exact_masks("h2o")
+
+        def score_quartets_first(row: np.ndarray) -> float:
+            support = np.flatnonzero(row)
+            if support.size == 1:
+                return 100.0 + float(support[0])
+            return float(support[0]) + 0.1 * float(support[1])
+
+        result = select_senquart_quota(
+            norb,
+            score_quartets_first,
+            n_singles=3,
+            n_quartets=2,
+            disjoint_orbitals=True,
+            exact_masks=exact,
+        )
+        assert len(result.singles) == 3
+        assert len(result.quartets) == 2
+        # Accepts are singles-then-quartets even when quartets score lower.
+        kinds = [ev["kind"] for ev in result.selection_trace if ev["event"] == "accept"]
+        assert kinds[:3] == ["single", "single", "single"]
+        assert kinds[3:] == ["quartet", "quartet"]
+
+    def test_n2_disjoint_exact_survives_adversarial_costs(self):
+        """Greedy singles can strand quartets; repair must still find 4+3."""
+        from src.sto3g_exact_symmetries import sto3g_exact_masks
+
+        norb = 10
+        exact = sto3g_exact_masks("n2")
+        fails = 0
+        for seed in range(30):
+            rng = np.random.default_rng(seed)
+
+            def score_row(row: np.ndarray, rng=rng) -> float:
+                support = np.flatnonzero(row)
+                if support.size == 1:
+                    return float(rng.random())
+                return 10.0 + float(rng.random())
+
+            try:
+                result = select_senquart_quota(
+                    norb,
+                    score_row,
+                    n_singles=4,
+                    n_quartets=3,
+                    disjoint_orbitals=True,
+                    exact_masks=exact,
+                )
+            except ValueError:
+                fails += 1
+                continue
+            assert len(result.singles) == 4
+            assert len(result.quartets) == 3
+        assert fails == 0
+
+    def test_allows_overlap_when_disabled(self):
+        norb = 5
+
+        def score_row(row: np.ndarray) -> float:
+            support = np.flatnonzero(row)
+            if support.size == 1:
+                return float(support[0] + 1)
+            p, q = int(support[0]), int(support[1])
+            return 10.0 + float(p) + 0.1 * float(q)
+
+        result = select_senquart_quota(
+            norb, score_row, n_singles=3, n_quartets=2, disjoint_orbitals=False
+        )
+        assert result.selection_rule == "senquart_quota"
+        assert result.singles == (0, 1, 2)
+        # With overlap allowed, cheapest quartets reuse low indices.
+        assert any(0 in edge for edge in result.quartets)
 
     def test_skips_dependent_quartet(self):
         norb = 3
@@ -162,18 +320,26 @@ class TestSenquartQuota:
         def score_row(row: np.ndarray) -> float:
             support = np.flatnonzero(row)
             if support.size == 1:
-                # All singles cheaper than any quartet.
                 return float(support[0])
             p, q = int(support[0]), int(support[1])
-            # Quartet 0-1 is the cheapest quartet but dependent after singles 0,1.
             if (p, q) == (0, 1):
                 return 10.0
             return 20.0 + float(p) + float(q)
 
-        result = select_senquart_quota(norb, score_row, n_singles=2, n_quartets=1)
+        result = select_senquart_quota(
+            norb, score_row, n_singles=2, n_quartets=1, disjoint_orbitals=False
+        )
         assert result.singles == (0, 1)
         assert result.quartets == ((0, 2),) or result.quartets == ((1, 2),)
         assert _is_independent(result.parity_matrix)
+
+    def test_disjoint_underfill_raises(self):
+        norb = 5
+        # 3 singles + 2 quartets need 7 orbitals when disjoint.
+        with pytest.raises(ValueError, match="disjoint_orbitals"):
+            select_senquart_quota(
+                norb, lambda row: 1.0, n_singles=3, n_quartets=2
+            )
 
     def test_underfill_raises(self):
         norb = 2
@@ -181,8 +347,7 @@ class TestSenquartQuota:
         def score_row(row: np.ndarray) -> float:
             return 1.0
 
-        # Only one quartet exists on 2 orbitals; quota of 2 cannot be filled.
-        with pytest.raises(ValueError, match="independent quartets"):
+        with pytest.raises(ValueError, match="independent quartets|disjoint"):
             select_senquart_quota(norb, score_row, n_singles=0, n_quartets=2)
 
 
@@ -202,6 +367,28 @@ class TestCliValidation:
             cost_function="NC",
             n_singles=3,
             n_quartets=2,
+        )
+
+    def test_greedy_quota_from_argv_when_kwargs_omitted(self, monkeypatch):
+        """Stale optimize_*.py may forget to forward quota kwargs."""
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "optimize_symmetries.py",
+                "mol.chk",
+                "--select",
+                "greedy",
+                "--n_singles",
+                "3",
+                "--n_quartets",
+                "2",
+            ],
+        )
+        validate_greedy_cli_args(
+            select="greedy",
+            n_sym=None,
+            cost_function="NC",
         )
 
     def test_greedy_quota_rejects_seniority_candidates(self):
