@@ -1,4 +1,4 @@
-*checkpoint.ipynb
+﻿*checkpoint.ipynb
 *.ipynb_checkpoints*
 .idea/
 *.txt
@@ -11,7 +11,18 @@ wavefunctions/
 # Local Fir/Alliance repro scripts + runs (own mini-repo)
 cluster_tests/
 
-scripts/
+# scripts/: track source, ignore generated artefacts
+scripts/**/__pycache__/
+scripts/**/*.pyc
+scripts/**/*.out
+scripts/**/*.err
+scripts/**/*.log
+scripts/**/*.json
+scripts/**/*.csv
+scripts/**/*.sample
+
+# Local agent memory (formalisms / procedure notes; not published)
+.cursor/memory/
 
 # Local venv / Alliance setup (do not publish)
 setup_venv.sh

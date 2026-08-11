@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+#SBATCH --job-name=h2o_mixed_dj
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=32
+#SBATCH --time=24:00:00
+#SBATCH --array=0-19
+#SBATCH --output=h2o_mixed_dj_%A_%a.out
+#SBATCH --error=h2o_mixed_dj_%A_%a.err
+#
+# Trillium: H2O Mixed (greedy quota) only — orbital-disjoint sen+quartets.
+# FCI-ref OO (NC/variance) then FCI-overlap chemical-accuracy K.
+#
+# Grid: OH = linspace(0.958, 2.5, 10)
+# Select: greedy only (3 singles + 2 quartets, disjoint supports)
+# Costs: NC, variance
+#   → 10 × 2 = 20 tasks (array 0-19)
+#
+# Requires synced src/greedy_selection.py (senquart_quota_disjoint).
+# Do NOT pass --mem-per-cpu. Max wall time is 24h.
+#
+# Submit from repo root:
+#   sbatch scripts/h2o/trillium_h2o_fci_mixed_disjoint_grid.sh
+#
+# Plot:
+#   sbatch --dependency=afterok:<ARRAY_JOBID> \
+#     --export=ALL,PLOT_ONLY=1 \
+#     scripts/h2o/trillium_h2o_fci_mixed_disjoint_grid.sh
+
+set -euo pipefail
+
+export TRILLIUM=1
+
+REPO="${REPO:-${SLURM_SUBMIT_DIR:-$PWD}}"
+cd "$REPO"
+
+# shellcheck disable=SC1091
+source "${REPO}/cluster_tests/_qs_env.sh"
+
+BASIS="${BASIS:-sto-3g}"
+HOH_ANGLE="${HOH_ANGLE:-104.5}"
+MAXITER="${MAXITER:-100}"
+STATES_PER_SECTOR="${STATES_PER_SECTOR:-200}"
+DIAG_CSV="${DIAG_CSV:-tables/h2o/fci_oo_metrics_mixed_disjoint.csv}"
+PLOT_PNG="${PLOT_PNG:-tables/h2o/fci_oo_metrics_mixed_disjoint_k.png}"
+GRID_NAME="${GRID_NAME:-h2o_fci_mixed_disjoint}"
+
+mapfile -t BONDS < <(python - <<'PY'
+import numpy as np
+for x in np.linspace(0.958, 2.5, 10):
+    print(f"{x:.10g}")
+PY
+)
+
+SELECT=greedy
+COSTS=(NC variance)
+
+N_BONDS=${#BONDS[@]}
+N_COSTS=${#COSTS[@]}
+N_TOTAL=$((N_BONDS * N_COSTS))
+
+mkdir -p "$(dirname "$DIAG_CSV")" "$(dirname "$PLOT_PNG")"
+
+if [[ "${PLOT_ONLY:-0}" == "1" ]]; then
+  echo "[plot] $(date -Is) CSV=$DIAG_CSV -> $PLOT_PNG"
+  python -u - <<PY
+import ast, csv
+from pathlib import Path
+import matplotlib.pyplot as plt
+from collections import defaultdict
+
+def f(row, k):
+    raw = (row.get(k) or "").strip()
+    if not raw:
+        return None
+    try:
+        return float(ast.literal_eval(raw))
+    except Exception:
+        return float(raw)
+
+rows = [r for r in csv.DictReader(Path("${DIAG_CSV}").open(newline="", encoding="utf-8")) if r.get("status") == "ok"]
+groups = defaultdict(list)
+for r in rows:
+    groups[r["cost_function"]].append(r)
+fig, ax = plt.subplots(figsize=(6.2, 4.0))
+styles = {"NC": ("#009E73", "s", "--"), "variance": ("#D55E00", "s", ":")}
+for cost, group in sorted(groups.items()):
+    group = sorted(group, key=lambda r: f(r, "bond"))
+    color, marker, ls = styles.get(cost, ("#333", "o", "-"))
+    ax.plot([f(r, "bond") for r in group], [f(r, "K") for r in group],
+            marker=marker, color=color, linestyle=ls, linewidth=1.9, markersize=6.5,
+            label=f"Mixed {cost} (disjoint)")
+ax.set_xlabel("OH bond length (A)")
+ax.set_ylabel("Chemical-Accuracy K")
+ax.set_title("H2O/STO-3G, Mixed Pool (orbital-disjoint)")
+ax.grid(alpha=0.25)
+ax.legend(frameon=False)
+fig.tight_layout()
+fig.savefig("${PLOT_PNG}", dpi=220, bbox_inches="tight")
+print("[ok] wrote ${PLOT_PNG}")
+PY
+  exit 0
+fi
+
+TASK="${SLURM_ARRAY_TASK_ID:?SLURM_ARRAY_TASK_ID not set}"
+if (( TASK < 0 || TASK >= N_TOTAL )); then
+  echo "[error] task=$TASK out of range 0..$((N_TOTAL - 1))" >&2
+  exit 1
+fi
+
+BOND_IDX=$((TASK % N_BONDS))
+COST_IDX=$((TASK / N_BONDS))
+BOND="${BONDS[$BOND_IDX]}"
+COST="${COSTS[$COST_IDX]}"
+
+echo "[job] $(date -Is) task=$TASK/$N_TOTAL bond=$BOND select=$SELECT cost=$COST"
+
+python -u scripts/run_fci_oo_metrics_point.py \
+  --molecule h2o \
+  --bond "$BOND" \
+  --select "$SELECT" \
+  --cost_function "$COST" \
+  --basis "$BASIS" \
+  --hoh_angle "$HOH_ANGLE" \
+  --n_singles 3 \
+  --n_quartets 2 \
+  --n_sym 5 \
+  --maxiter "$MAXITER" \
+  --states_per_sector "$STATES_PER_SECTOR" \
+  --csv "$DIAG_CSV" \
+  --out_root results \
+  --grid_name "$GRID_NAME"
+
+echo "[ok] finished bond=$BOND cost=$COST at $(date -Is)"

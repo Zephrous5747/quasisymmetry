@@ -1,0 +1,119 @@
+% Insert into report_las_sto3g.tex immediately AFTER the subsection
+% "Cost functions and the reference state" (i.e. after Eq.~\eqref{eq:commutator}
+% and its paragraph), and BEFORE "Candidate libraries and the ranked scan".
+%
+% It promotes the claim already made informally at the end of the subsection
+% "Parity rows, exact group, quotient" -- that c(g+e)=c(g) -- to a stated and
+% proved proposition, and then draws the consequence that governs Q3 and Q4.
+
+\subsection{The cost is a class function on the quotient}
+\label{sec:classfunction}
+
+The exclusion of exact-dressed duplicates in Eq.~\eqref{eq:ranktest} was
+justified above by the assertion $c(g+e)=c(g)$. That identity is not a
+convenience: it determines what any cost-ranked selection rule is able to
+choose, and it is therefore stated and proved here.
+
+\begin{proposition}[Coset invariance of the cost]
+\label{prop:coset}
+Let $|\Psi\rangle$ lie in a fixed exact sector, so that $Z(e)|\Psi\rangle
+=\sigma_e|\Psi\rangle$ with $\sigma_e\in\{+1,-1\}$ for every $e\in\Ecal$. Then
+for all $g\in\FF^{N}$ and all $e\in\Ecal$,
+\begin{equation}
+c^{\mathrm{NC}}_{\Psi,U}(g+e)=c^{\mathrm{NC}}_{\Psi,U}(g),
+\qquad
+c^{\mathrm{var}}_{\Psi,U}(g+e)=c^{\mathrm{var}}_{\Psi,U}(g).
+\label{eq:cosetinvariance}
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+Addition of rows over $\FF$ is multiplication of the operators in
+Eq.~\eqref{eq:Zg}, so $Z(g+e)=Z(g)Z(e)$. By Eq.~\eqref{eq:exact},
+$[\Ht(U),Z(e)]=0$, hence
+\begin{equation}
+[\Ht(U),Z(g)Z(e)]
+=[\Ht(U),Z(g)]\,Z(e)+Z(g)\,[\Ht(U),Z(e)]
+=[\Ht(U),Z(g)]\,Z(e).
+\label{eq:commexpand}
+\end{equation}
+Applying this to $|\Psi\rangle$ and using $Z(e)|\Psi\rangle=\sigma_e|\Psi\rangle$
+gives $[\Ht,Z(g+e)]|\Psi\rangle=\sigma_e\,[\Ht,Z(g)]|\Psi\rangle$. Since
+$\sigma_e^{2}=1$, the norms in Eq.~\eqref{eq:nc} coincide. For
+Eq.~\eqref{eq:var}, $\langle\Psi|Z(g)Z(e)|\Psi\rangle
+=\sigma_e\langle\Psi|Z(g)|\Psi\rangle$, and the expectation is squared.
+\end{proof}
+
+Both cost functions are therefore constant on the cosets $g+\Ecal$: they are
+well defined on the quotient $\Qcal$ of Eq.~\eqref{eq:quotient}, not merely on
+$\FF^{N}$. Write $\bar c(\bar g)$ for the induced function, $\bar g$ denoting
+the class of $g$.
+
+Two structural consequences follow, and together they account for the
+selection-rule results of Sections~\ref{sec:q3} and~\ref{sec:q4}.
+
+\paragraph{(0) The ground set is the spatial subregister, not $\FF^{N}$.}
+\begin{sloppypar}
+Candidates are generated as products of the spin-symmetric pairs
+$\Zb_p=Z_{p\alpha}Z_{p\beta}$, i.e.\ as images of the embedding $\iota$ of
+Eq.~\eqref{eq:iota}, so the ground set of the matroid below is
+$\iota(\FF^{n})\subset\FF^{N}$ and not $\FF^{N}$ itself. This is an
+implementation restriction, not a requirement of the procedure: the candidate
+generator, the GF(2) rank test and the cost evaluation all act on rows of
+length $n$, and spin-resolved rows such as $Z_{p\alpha}$ alone are never
+formed. Its consequences are that the accessible budget is bounded by
+$n-\rsp$ rather than $N-r$ (Eq.~\eqref{eq:budget-sp}), and that the optima
+reported here are optima over $\iota(\FF^{n})$ only; a spin-resolved search
+could in principle reach a lower selection cost at the same $M$. Removing the
+restriction requires the candidate library, the rank test and the cost to be
+carried in the length-$N$ register throughout --- a change of representation
+rather than of algorithm --- and it has not been done here. All statements in
+Sections~\ref{sec:q3}, \ref{sec:q4} and~\ref{sec:budget} are therefore to be
+read as holding within the spin-symmetric ground set.
+\end{sloppypar}
+
+\paragraph{(i) The pool is an independent set of a linear matroid.}
+The acceptance test of Eq.~\eqref{eq:ranktest} admits $g$ exactly when
+$\bar g$ is linearly independent of the classes already accepted. The
+admissible pools of size $M$ are therefore precisely the independent sets of
+size $M$ of the linear matroid on $\Qcal$, and the budget bound
+Eq.~\eqref{eq:budget} is the statement that the rank of that matroid is
+$\dim\Qcal$.
+
+\paragraph{(ii) Greedy ranking is optimal at every budget.}
+For a matroid with non-negative element weights, the greedy algorithm returns a
+minimum-weight independent set of size $M$ for \emph{every} $M$, not only at
+full rank. Since the weight $\bar c$ is well defined on $\Qcal$ by
+Proposition~\ref{prop:coset}, any two selection rules that both attain the
+greedy optimum select independent sets of equal total weight, and hence
+subspaces $\operatorname{span}\{\bar g_1,\dots,\bar g_M\}\subseteq\Qcal$ that
+are optimal in the same sense. Minimum-weight independent sets need not be
+unique; when they are not, the rules may return different rows while spanning
+the same subspace.
+
+\paragraph{Gauge freedom.}
+A rule reports rows $g_j\in\FF^{N}$, but only the classes $\bar g_j$ carry
+information: by Proposition~\ref{prop:coset} the cost is unchanged, and by
+Eq.~\eqref{eq:ranktest} the accepted rank is unchanged, if any $g_j$ is
+replaced by $g_j+e$. The group generated by $\Ecal$ together with the pool,
+and therefore the sector partition, the block dimensions $\Dmax$ and the
+coupled dimension $K$, depend only on
+$\operatorname{span}\{\bar g_1,\dots,\bar g_M\}$. Differences between rules in
+the reported rows are consequently \emph{not} evidence of a different
+selection; only a difference in the spanned subspace is. This distinction is
+applied throughout Section~\ref{sec:q4}, where rules are compared by span
+rather than by row equality.
+
+\paragraph{A degenerate budget.}
+If $M=\dim\Qcal$ then any $M$ independent classes form a basis of $\Qcal$, so
+$\operatorname{span}\{\bar g_1,\dots,\bar g_M\}=\Qcal$ for \emph{every}
+admissible pool, and
+$\operatorname{span}(\Ecal\cup\Gcal)=\FF^{N}$ irrespective of the rule. At that
+budget the partition is rule-independent by construction and carries no
+discriminating information; a rule can influence $K$ only indirectly, through
+the orbital objective of Eq.~\eqref{eq:objective}. This degeneracy is the one
+noted in Section~\ref{sec:matroid} for the span test; the statement here is
+its general form, and it applies to $\Dmax$ and the block count as well.
+Comparisons at $M=\dim\Qcal$ must therefore be read with the degeneracy in
+mind, and Section~\ref{sec:budget} repeats the campaign at $M=\dim\Qcal-1$,
+where the spanned subspace is proper and the degeneracy is absent.

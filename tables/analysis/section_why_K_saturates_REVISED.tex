@@ -1,0 +1,148 @@
+% Replacement for Sec. "Why K saturates (and why this is not a 2^r tax)"
+% in update_document_exact_full_U.tex, and for the corresponding claims in
+% the abstract and Sec. 1 ("Relation to the previous note").
+%
+% Evidence: scripts/audit/audit_0{2,3,5}, run on Trillium 2026-08-07.
+% Raw: tables/audit/audit05_support_vs_K.txt, tables/audit/audit02_exact_split.txt
+
+\section{Retraction: the $K$ saturation is an indexing artifact}
+\label{sec:claims}
+
+The saturation reported in the endpoint tables of the superseded note
+(\texttt{update\_document\_exact\_full\_U.tex}, Sec.~``Endpoint tables'') is not a
+property of the exact symmetries. It is caused by three defects in the
+document-exact pipeline, of which the first is decisive.
+
+\subsection{The exact generators are not symmetries at most geometries}
+
+\texttt{src/sto3g\_exact\_symmetries.py} stores the document generators as
+hardcoded orbital \emph{indices}
+($\mathrm{H_2O}$: $Q_{B1}=\{4\}$, $Q_{B2}=\{2,6\}$;
+$\mathrm{N_2}$: $Q_{\pi x}=\{4,7\}$, $Q_{\pi y}=\{5,8\}$,
+$Q_u=\{1,3,4,5,9\}$).
+Those indices are correct only at the geometry for which the PDF was written.
+Molecular-orbital energies cross along both scans, so at other bond lengths the
+same indices name orbitals of different irreps and the resulting $Z$ products
+do not commute with $H$.
+
+The diagnostic is \texttt{reference\_weight\_sum}: the fraction of the FCI
+reference captured by the retained sector eigenstates. It is $1$ exactly when
+the pinned operators are genuine symmetries.
+
+\begin{table}[htbp]
+\centering
+\caption{Validity of the hardcoded orbital supports against the actual
+Hartree--Fock irrep labels, versus the reported endpoint diagnostics
+(U\_full, iterative, NC).}
+\label{tab:support-vs-k}
+\begin{tabular}{cccccccc}
+\toprule
+$R$ & supports valid & $K$ & dim & sectors & converged &
+$\sum w_{\mathrm{ref}}$ & $|\Delta E_{\mathrm{dec}}|$ \\
+\midrule
+\multicolumn{8}{l}{\emph{$\mathrm{H_2O}$}}\\
+0.958  & yes & 4   & 37  & 3  & yes & 1.0000 & 0.0213 \\
+1.1293 & yes & 5   & 37  & 3  & yes & 1.0000 & 0.0336 \\
+1.3007 & yes & 7   & 37  & 3  & yes & 1.0000 & 0.0519 \\
+1.4720 & \textbf{no}  & 261 & 261 & 31 & no & 0.9255 & 0.0719 \\
+1.6433 & \textbf{no}  & 261 & 261 & 31 & no & 0.8855 & 0.0953 \\
+1.8147 & \textbf{no}  & 261 & 261 & 31 & no & 0.8424 & 0.1196 \\
+1.9860 & \textbf{no}  & 261 & 261 & 31 & no & 0.8054 & 0.1414 \\
+2.1573 & \textbf{no}  & 261 & 261 & 31 & no & 0.7801 & 0.1585 \\
+2.3287 & \textbf{no}  & 261 & 261 & 31 & no & 0.7655 & 0.1703 \\
+2.5000 & \textbf{no}  & 261 & 261 & 31 & no & 0.0242 & 0.0064 \\
+\midrule
+\multicolumn{8}{l}{\emph{$\mathrm{N_2}$ --- all eleven geometries}}\\
+1.2--2.2 & \textbf{no} & 3584 & 3584 & 124 & no & \textbf{0.0000} & 0.28--0.38 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Three consequences.
+
+\begin{enumerate}[leftmargin=1.4em]
+  \item For $\mathrm{H_2O}$ the compact/saturated boundary coincides
+        \emph{exactly} with the geometry at which the $3a_1/1b_1$ ordering
+        swaps ($R=1.472$). Where the supports are valid, $\sum w_{\mathrm{ref}}
+        = 1$, $K \in \{4,5,7\}$ and every point converges. Where they are not,
+        $\sum w_{\mathrm{ref}}$ decays monotonically to $0.766$ and collapses
+        to $0.024$ at $R = 2.5$, where the ordering is scrambled furthest
+        ($Q_{B1}\!\to\!\{6\}$, $Q_{B2}\!\to\!\{3,5\}$).
+  \item For $\mathrm{N_2}$ the hardcoded supports are already wrong at
+        $R=1.2$: $3\sigma_g$ occupies index $4$, so the correct supports are
+        $Q_{\pi x}=\{6,7\}$ and $Q_u=\{1,3,5,6,9\}$. Consequently
+        $\sum w_{\mathrm{ref}} = 0$ at \emph{every} geometry: the retained
+        space is orthogonal to the FCI reference. No $K$ can converge, and the
+        search necessarily runs to the full retained dimension. The $K=3584$
+        column carries no information about the selection methods.
+  \item The apparently excellent $|\Delta E_{\mathrm{dec}}| = 6.4\times10^{-3}$
+        at $\mathrm{H_2O}$ $R=2.5$ is spurious: with
+        $\sum w_{\mathrm{ref}} = 0.024$ the decoupled energy is a minimum over
+        a space that barely overlaps the ground state.
+\end{enumerate}
+
+\subsection{The sector filter leaves one generator unpinned}
+
+\texttt{metrics.py} recomputes
+$n_{\mathrm{exact}} = n_{\mathrm{spin}} +
+(n_{\mathrm{spatial\,kept}} - n_{\mathrm{las}})$
+using the \emph{pre-drop} LAS count. Because
+$\operatorname{span}(\mathcal E\cup\mathrm{LAS})$ has full rank on the spatial
+register, all-ones lies in that span; its interleaved qubit image equals
+$P_\alpha \oplus P_\beta$, so exactly one combined row is dropped and the
+arithmetic charges that drop to the exact block. Measured on the campaign
+artifacts: $n_{\mathrm{exact}} = 3$ against document $r = 4$ ($\mathrm{H_2O}$)
+and $4$ against $5$ ($\mathrm{N_2}$).
+\texttt{filter\_labels\_fixed\_exact} therefore pins only the leading
+$n_{\mathrm{exact}}$ generators, leaving $Q_{B2}$ and $Q_u$ free.
+
+This explains the dimension mismatch flagged as an open question in the
+previous draft. Independent determinant counting gives, for the fully pinned
+document sector, $133$ ($\mathrm{H_2O}$) and $1824$ ($\mathrm{N_2}$), matching
+the PDF. The observed retained dimensions are $261$ and $3584$: exactly the
+dimensions obtained when one point-group generator is left unconstrained.
+There is no $2^{r}$ tax; the working space was never correctly restricted.
+
+\subsection{The sector label is chosen by size, not by physics}
+
+Neither \texttt{trillium\_resubmit\_document\_exact\_U.sh} nor the endpoint
+grid scripts export \texttt{EXACT\_SECTOR}, so
+\texttt{choose\_default\_exact\_sector} selects the \emph{densest} physical
+tapered sector. For $\mathrm{N_2}$ this lands on a sector carrying a $-1$
+$\pi$ parity, which cannot contain the ${}^1\Sigma_g^+$ ground state --- the
+mechanism behind $\sum w_{\mathrm{ref}} = 0$.
+
+\subsection{Method discrimination was structurally impossible}
+
+Independently of the above, $n_{\mathrm{sym}}$ is fixed at $5$
+($\mathrm{H_2O}$) and $7$ ($\mathrm{N_2}$) while $r_{\mathrm{spatial}}$ is $2$
+and $3$, so $r + n_{\mathrm{sym}} = N$ in both cases and
+$\operatorname{span}(\mathcal E \cup \mathrm{LAS})$ is the whole GF(2) space.
+The sector partition is then the finest possible and is identical for every
+selection rule. The coincidence of all six method$\times$cost series in
+the endpoint figures of the superseded note is a consequence of this
+configuration, not evidence that the methods agree.
+
+\subsection{Status of the campaign}
+
+The $252$ endpoint metrics of this campaign do not support any conclusion
+about iterative versus mixed pools, about the effect of exact symmetries on
+$K$, or about full versus irrep orbital packing. The agreement between
+full-$U$ and irrep-$U$ on $124/126$ paired points is expected once both arms
+share a reference space that is largely (\,$\mathrm{N_2}$: entirely\,)
+orthogonal to the target state.
+
+Required before any rerun:
+\begin{enumerate}[leftmargin=1.4em]
+  \item derive the generator supports per geometry from the point-group labels
+        of the Hartree--Fock orbitals in each \texttt{.chk}
+        (\texttt{scripts/audit/gen\_exact\_from\_orbsym.py}), and assert
+        $\sum w_{\mathrm{ref}} = 1$ as a run-time precondition;
+  \item repair the $n_{\mathrm{exact}}$ arithmetic in \texttt{metrics.py} to
+        use the post-drop LAS count, and assert
+        $n_{\mathrm{exact}} = r_{\mathrm{spatial}} + 2$;
+  \item pass \texttt{--exact\_sector} explicitly rather than relying on the
+        density heuristic;
+  \item choose $n_{\mathrm{sym}} < N - r$ so the partition is not maximal and
+        the selection rules can be distinguished.
+\end{enumerate}

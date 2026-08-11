@@ -1,0 +1,150 @@
+% Companion to results_irrep_document_exact.tex and
+% section_why_K_saturates_REVISED.tex.
+% Covers: the LAS budget defect (Eq.6), the Sec.4 exhaustive control, and the
+% Sec.10 reproducibility record.
+%
+% Evidence: scripts/exhaustive_quotient_check.py over 126 U_irrep points
+% (2026-08-08), scripts/audit/audit_07_repro_record.sh.
+
+\section{The LAS budget violates Eq.~(6)}
+\label{sec:budget-defect}
+
+The campaign fixes $M = n_{\mathrm{sym}} = n_{\mathrm{singles}} +
+n_{\mathrm{quartets}} = 5$ ($\mathrm{H_2O}$) and $7$ ($\mathrm{N_2}$). This is a
+greedy quota, never checked against Eq.~(6), $M \le N - r$.
+
+The exact parity matrix written to disk contains only the point-group rows. It
+omits total particle parity,
+\begin{equation}
+\mathbf{1} \;=\; \prod_p \bar Z_p \;=\; \prod_p Z_{p\alpha} Z_{p\beta}
+\;=\; (-1)^{\hat N} \;=\; P_\alpha \oplus P_\beta ,
+\end{equation}
+which is an exact symmetry and is already counted among the document's $r$
+generators (as $P_\alpha$ and $P_\beta$). Because it never enters the GF(2)
+independence test of Eq.~(7), the admissible budget is overstated by one:
+
+\begin{table}[htbp]
+\centering
+\caption{Admissible LAS budget in the spatial $\bar Z$ register.}
+\label{tab:budget}
+\begin{tabular}{lccccc}
+\toprule
+ & $n$ & rank $\mathcal E$ (PG only) & $M_{\max}$ & rank $\mathcal E$ (with $\mathbf 1$) & $M_{\max}$ \\
+\midrule
+$\mathrm{H_2O}$ & 7  & 2 & 5 & 3 & \textbf{4} \\
+$\mathrm{N_2}$  & 10 & 3 & 7 & 4 & \textbf{6} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The runs therefore carry one LAS row that is independent only because
+$\mathbf 1$ was dropped from $\mathcal E$. The same omission has two further
+consequences already documented elsewhere in this note: it is the row that
+\texttt{clifford\_symmetries\_from\_spatial} discards at the qubit level once
+$P_\alpha, P_\beta$ are prepended (the source of the $n_{\mathrm{exact}}$
+off-by-one), and it is why $r_{\mathrm{spatial}} + M = N$ exactly, which forces
+$\operatorname{span}(\mathcal E \cup \mathcal G) = \mathbb F_2^{N}$ and makes
+the sector partition maximal.
+
+\subsection{Reachable candidate space}
+Sec.~4.1 of the procedure note works in the qubit register, $N = 2n$:
+\begin{center}
+\begin{tabular}{lccccc}
+\toprule
+ & $N$ & $r$ & $N-r$ & $|\mathcal C_{\mathrm{full}}| = 2^{N-r}-1$ & reachable here \\
+\midrule
+$\mathrm{H_2O}$ & 14 & 4 & 10 & 1023 & 4 \\
+$\mathrm{N_2}$  & 20 & 5 & 15 & 32767 & 6 \\
+\bottomrule
+\end{tabular}
+\end{center}
+The implementation represents LAS only as spatial products
+$\bar Z_p = Z_{p\alpha} Z_{p\beta}$, which span $n$ of the $2n$ parity
+directions. The reachable quotient is therefore $4$ / $6$ dimensional against
+the document's $10$ / $15$: \emph{under half of the specified candidate space},
+and the inaccessible directions are exactly the spin-resolved ones
+($Z_{p\alpha}$ alone). This is a property of the candidate representation, not
+a tuning choice, and it bounds every comparison in this note.
+
+\section{Exhaustive quotient-pool control (Sec.~4)}
+\label{sec:exhaustive}
+
+All $2^{N-r}-1$ nontrivial parity classes modulo $\mathcal E$ were scored at
+each point's converged orbitals ($31$ classes for $\mathrm{H_2O}$, $127$ for
+$\mathrm{N_2}$ in the spatial register), the greedy independence scan was
+repeated on the full ranking, and the result compared with the polynomial pool
+(Sec.~4.3). Scoring uses
+$([\widetilde H, Z(g)]\Psi)_i = (\widetilde H (z\!\cdot\!\Psi))_i - z_i
+(\widetilde H\Psi)_i$, one Hamiltonian application per candidate.
+
+A correctness gate re-scores the polynomial pool's own rows and compares
+against its recorded \texttt{selected\_costs}; $121/126$ points reproduce them
+to $\le 10^{-4}$ relative.
+
+\subsection{The span test is vacuous at this budget}
+$\operatorname{span}(\mathcal E \cup \mathcal G)$ agrees on $126/126$ points ---
+but with $M = N-r$ \emph{any} $M$ independent rows span the whole quotient, so
+the test cannot fail for any pool whatsoever. It is not evidence of anything.
+For the same reason \texttt{first\_rejected\_competitor} is empty at every
+point: the scan accepts every independent row it meets, so Sec.~4.3 item~2
+(the NC gap to the first rejected independent competitor) has no content here
+either. Both tests require $M < N-r$.
+
+\subsection{What the control does establish}
+The informative quantity is the total objective. Restricting to the $41$
+iterative points where both pools are scored in the same frame,
+\begin{equation}
+\frac{\sum_i c(g_i^{\mathrm{exhaustive}})}
+     {\sum_i c(g_i^{\mathrm{polynomial}})}
+\in [1 - 5\times10^{-12},\, 1],
+\qquad \text{identical to } 10^{-9} \text{ on } 41/41 .
+\end{equation}
+The polynomial current-frame library of $N(N+1)/2$ singles and pairs therefore
+attains the \emph{same} minimum-NC quotient basis as scanning all $31$ / $127$
+classes. Within the reachable candidate space and at $M = N-r$, the
+restricted-neighbourhood approximation of Sec.~7.1 costs nothing for the
+iterative pool.
+
+The greedy/mixed pools cannot be compared from the same artifacts: their
+recorded \texttt{selected\_costs} sum exactly to \texttt{cost\_before}, i.e.\
+they are selection-time values at the \emph{unrotated} orbitals, because the
+quota is chosen once before the orbital optimiser runs. For
+$\mathrm{H_2O}$ at $R=1.1293$\,\AA, \texttt{cost\_before} $= 0.40683$ against
+\texttt{cost\_after} $= 0.25362$: the mixed quota is selected against a
+Hamiltonian $38\%$ different in objective from the one it is finally evaluated
+in. This asymmetry with the iterative pool --- which reselects at every
+macroiteration --- is a plausible mechanism for the $K$ differences in
+Sec.~\ref{sec:iter-vs-mixed} that is independent of pool construction.
+
+\subsection{Reference ambiguity at stretched $\mathrm{H_2O}$}
+Five points fail the gate, all at $R \ge 2.33$\,\AA. At $R = 2.5$\,\AA\ the FCI
+gap is $E_1 - E_0 = 4.5\times10^{-4}$\,Ha, so the reference is not determined by
+energy alone and independent solvers can return different vectors from the
+near-degenerate manifold. The NC and variance rankings at those geometries are
+correspondingly reference-dependent; results there should be quoted with that
+caveat rather than as converged values.
+
+\subsection{Not attempted}
+The Sec.~4.2 \emph{self-consistent} exhaustive fixed point --- re-optimising the
+orbitals against the exhaustive pool and re-ranking until the LAS span stops
+moving --- is implemented
+(\texttt{scripts/exhaustive\_selfconsistent.py}) but not reported here, because
+at $M = N-r$ it converges at the first macroiteration by construction. Sec.~4.4
+is explicit that even the converged fixed point would not be a global optimum:
+it removes candidate omission only, and local orbital minima, the basis
+dependence of the generator-sum objective (Sec.~5), and cycles all remain.
+
+\section{Reproducibility record (Sec.~10)}
+\label{sec:repro}
+All seven items are satisfied on $126/126$ points of the $U_{\mathrm{irrep}}$
+grid; item~6 is not applicable (route A, no DMRG in the search).
+Item~1's rotation convention is \emph{measured} rather than assumed: the
+orbital rotation is applied as $C_{\mathrm{MO}} U^{\mathsf T}$, established by
+requiring the recorded NC values to be reproduced --- $C_{\mathrm{MO}} U$ is
+wrong by up to a factor of $78$, and is invisible to $E_{\mathrm{FCI}}$, which
+is invariant under orbital rotation.
+
+Remaining gaps are not record-keeping but unrun controls: the Sec.~4.2
+self-consistent fixed point at $M < N-r$, the qubit-scope exhaustive pool
+($1023$ / $32767$ classes), Sec.~7.3(4) boundary reranking with a more accurate
+state, and the Sec.~3.2/7.1 multiple-initialisation robustness test.

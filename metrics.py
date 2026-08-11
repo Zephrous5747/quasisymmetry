@@ -951,17 +951,31 @@ def run_clifford_metrics(args, input_data, out_data):
     retained_dims = {
         label: sector_results[label]["dimension"] for label in labels
     }
-    out_data["sector_dimension_stats"] = sector_dimension_stats(selected_dims)
-    out_data["retained_sector_dimension_stats"] = sector_dimension_stats(retained_dims)
-    out_data["D_max"] = out_data["sector_dimension_stats"]["D_max"]
-    out_data["D_min"] = out_data["sector_dimension_stats"]["D_min"]
-    out_data["n_sectors"] = out_data["sector_dimension_stats"]["n_sectors"]
-    # Sectors surviving the exact filter, vs all physical sectors before it.
+    selected_stats = sector_dimension_stats(selected_dims)
+    retained_stats = sector_dimension_stats(retained_dims)
+    out_data["sector_dimension_stats"] = selected_stats
+    out_data["retained_sector_dimension_stats"] = retained_stats
+
+    # D_max is a COST figure: the largest block that must be diagonalised under
+    # the fixed exact target. Per the PDF sec.13 definition it is taken over the
+    # exact-filtered PARTITION, so it does not depend on K. Taking it over the
+    # K-selected sectors instead makes it vary with K and destroys its use as a
+    # cross-arm invariant.
+    out_data["D_max"] = retained_stats["D_max"]
+    out_data["D_min"] = retained_stats["D_min"]
+    out_data["n_sectors_retained"] = retained_stats["n_sectors"]
+    out_data["exact_sector_total_dim"] = retained_stats["total_dim"]
+    # K-dependent counterparts, kept separately and clearly named.
+    out_data["D_max_used"] = selected_stats["D_max"]
+    out_data["n_sectors"] = selected_stats["n_sectors"]
+    # All physical sectors before the exact filter.
     out_data["n_sectors_total"] = int(n_sectors_total)
-    out_data["exact_sector_total_dim"] = out_data[
-        "retained_sector_dimension_stats"
-    ]["total_dim"]
-    print("  D_max:", out_data["D_max"])
+    print(
+        "[dims] D_max=", out_data["D_max"],
+        " D_min=", out_data["D_min"],
+        " retained_sectors=", out_data["n_sectors_retained"],
+        " total_dim=", out_data["exact_sector_total_dim"],
+    )
 
     weight_sum = out_data.get("reference_weight_sum")
     out_data["reference_weight_ok"] = (
@@ -1058,6 +1072,28 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--verify_fci_rotation",
+        dest="verify_fci_rotation",
+        action="store_true",
+        default=True,
+        help="check the rotated FCI vector: norm, <H(U)>, residual (default on)",
+    )
+    parser.add_argument(
+        "--no_verify_fci_rotation",
+        dest="verify_fci_rotation",
+        action="store_false",
+        help="skip the rotated-FCI check",
+    )
+    parser.add_argument(
+        "--verify_fci_recompute",
+        action="store_true",
+        help=(
+            "additionally solve FCI afresh on the rotated integrals and report "
+            "the overlap; catches a wrong rotation convention, which E_FCI "
+            "cannot because it is rotation-invariant"
+        ),
+    )
+    parser.add_argument(
         "--clifford_block_builder",
         choices=("tapered", "physical"),
         default="tapered",
@@ -1142,11 +1178,27 @@ if __name__ == "__main__":
     )
     out_data = {"args": vars(args), "OO_data": input_data}
 
-    if args.sector_backend == "clifford":
+    # An OO JSON carrying exact_masks REQUIRES the Clifford path: the
+    # determinant backend builds no exact/LAS split, so it emits no n_exact /
+    # exact_sector and every downstream precondition check fails. Route on the
+    # data, not just the flag -- callers that forget --sector_backend clifford
+    # would otherwise silently produce unusable metrics.
+    use_clifford = args.sector_backend == "clifford" or bool(
+        input_data.get("exact_masks")
+    )
+    out_data["sector_backend_routed"] = "clifford" if use_clifford else "determinant"
+    if use_clifford and args.sector_backend != "clifford":
+        print(
+            "[metrics] OO JSON carries exact_masks -> routing to the Clifford "
+            "backend (--sector_backend clifford implied)",
+            flush=True,
+        )
+
+    if use_clifford:
         if args.backend != "fci":
             parser.error(
-                "--sector_backend clifford currently requires --backend fci "
-                "(determinant eigsh/eigh path)"
+                "--sector_backend clifford (or exact_masks in OO JSON) currently "
+                "requires --backend fci (determinant eigsh/eigh path)"
             )
         run_clifford_metrics(args, input_data, out_data)
         with open(outname, "w") as fp:
@@ -1161,12 +1213,33 @@ if __name__ == "__main__":
     moldata = load_moldata(input_data["molpath"])
     dumpdata = fcidump_data(input_data["molpath"])
 
-    parity_matrix = np.loadtxt(input_data["parity"], dtype=int)
+    work_parity = input_data.get("parity") or input_data.get("parity_output")
+    if not work_parity:
+        raise SystemExit(
+            "OO JSON needs 'parity' or 'parity_output' pointing at the selected "
+            "parity matrix"
+        )
+    parity_matrix = np.loadtxt(work_parity, dtype=int)
     symmetries = parity_matrix_to_quasisymmetries(
         parity_matrix, moldata.norb, moldata.nelec
     )
 
     print(parity_matrix)
+
+    # M_eff is the generator count modulo the exact span -- the budget actually
+    # spent. It differs from the raw row count whenever all-ones (or another
+    # exact row) is inside the selected span.
+    from src.parity_rank import effective_parity_rank
+
+    rank_info = effective_parity_rank(
+        parity_matrix, exact_masks=input_data.get("exact_masks")
+    )
+    print(
+        "[parity] raw_rank=", rank_info["raw_rank"],
+        " M_eff=", rank_info["M_eff"],
+        " contains_total_parity=", rank_info["contains_total_parity"],
+    )
+    out_data["parity_rank_info"] = rank_info
 
     sectors = symmetry_sectors(parity_matrix, moldata.norb, moldata.nelec)
 
@@ -1245,8 +1318,16 @@ if __name__ == "__main__":
     print("sector solve_time_s", solve_time_s)
 
     # D_max for the determinant backend too, so plots can key off one field.
-    out_data["sector_dimension_stats"] = sector_dimension_stats(sectors)
-    out_data["D_max"] = out_data["sector_dimension_stats"]["D_max"]
+    dstats = sector_dimension_stats(sectors)
+    out_data["sector_dimension_stats"] = dstats
+    out_data["D_max"] = dstats["D_max"]
+    out_data["D_min"] = dstats["D_min"]
+    out_data["n_sectors"] = dstats["n_sectors"]
+    print(
+        "[dims] D_max=", dstats["D_max"],
+        " D_min=", dstats["D_min"],
+        " total_dim=", dstats["total_dim"],
+    )
 
     sector_gs_energies = []
     for w, v in sector_eigs.items():
@@ -1319,7 +1400,15 @@ if __name__ == "__main__":
             full_space_vectors.append(full_space_vectors_in_sector)
         full_space_vectors_cat = np.concatenate(full_space_vectors, axis=1)
 
-        k_min, e_coupled, converged, weights_order = reference_coupled_energy_k(
+        # Returns 5: the trailing per-column overlap weights are what the
+        # retained reference weight W is summed from on this backend.
+        (
+            k_min,
+            e_coupled,
+            converged,
+            weights_order,
+            reference_weights,
+        ) = reference_coupled_energy_k(
             h_apply,
             full_space_vectors_cat,
             rotated_refvec,
@@ -1327,12 +1416,61 @@ if __name__ == "__main__":
             chemical_precision=CHEMICAL_PRECISION,
         )
         print("E_coupled (full projection)", e_coupled)
+        reference_weights = np.asarray(reference_weights, dtype=float)
+        out_data["reference_weight_sum"] = (
+            float(np.sum(reference_weights)) if reference_weights.size else None
+        )
+        out_data["converged"] = bool(converged)
         out_data["K"] = k_min
         if k_min is None:
             print("Not enough states per sector")
             quit()
 
         print("K ", k_min)
+
+        weight_sum = out_data.get("reference_weight_sum")
+        out_data["reference_weight_ok"] = (
+            weight_sum is not None
+            and abs(float(weight_sum) - 1.0) <= REFERENCE_WEIGHT_TOL
+        )
+        # W restricted to the K columns actually used, vs W over all columns.
+        w_for_k = (
+            float(np.sum(reference_weights[weights_order[:k_min]]))
+            if k_min else None
+        )
+        out_data["reference_weight_for_K"] = w_for_k
+        print(" W_for_K=", w_for_k)
+        _check_reference_weight(out_data, strict=args.strict_reference_weight)
+
+        if args.verify_fci_rotation:
+            from src.fci_rotation_checks import verify_rotated_fci
+
+            fresh = None
+            if args.verify_fci_recompute:
+                from pyscf.fci import direct_spin1
+
+                cisolver = direct_spin1.FCI()
+                cisolver.conv_tol = 1e-12
+                cisolver.max_cycle = 200
+                _e_fresh, fcivec = cisolver.kernel(
+                    rotated_h.one_body_tensor,
+                    rotated_h.two_body_tensor,
+                    moldata.norb,
+                    moldata.nelec,
+                )
+                fresh = np.asarray(fcivec).reshape(-1)
+            checks = verify_rotated_fci(
+                h_apply=h_apply,
+                rotated_state=rotated_refvec,
+                e_fci=e_ref,
+                fresh_state=fresh,
+            )
+            print(
+                "[verify] rotated FCI: E_err=", checks["energy_error"],
+                " resid=", checks["residual_norm"],
+                " ok=", checks["ok"],
+            )
+            out_data["fci_rotation_check"] = checks
 
         all_state_labels = state_labels_for_columns(sector_eigs)
         chosen_keys = [all_state_labels[weights_order[i]] for i in range(k_min)]

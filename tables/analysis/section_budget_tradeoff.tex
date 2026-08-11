@@ -1,0 +1,112 @@
+% New section. Place after Section~\ref{sec:q4} and before
+% "Verification of the implementation".
+% Requires the generated table gen_budget_tradeoff.tex.
+
+\section{Budget and the block-dimension trade-off}
+\label{sec:budget}
+
+\subsection{Motivation}
+
+Section~\ref{sec:classfunction} showed that at $M=\dim\Qcal$ every admissible
+pool spans the whole quotient, so the sector partition cannot distinguish
+selection rules. Two questions follow. First, whether the agreement between
+cost-ranked rules reported in Section~\ref{sec:q4} survives when that
+degeneracy is removed. Second, what is paid, in block dimension, for reducing
+the budget. Both are addressed by repeating the campaign of
+Section~\ref{sec:q4} at $M=\dim\Qcal-1$, that is $M=3$ for $\mathrm{H_2O}$ and $M=5$
+for $\mathrm{N_2}$, with all other settings unchanged.
+
+\subsection{The agreement is not an artefact of the budget}
+
+At $M=\dim\Qcal-1$ the spanned subspace is a proper subspace of $\Qcal$, so
+different rules \emph{may} select different subspaces. The exhaustive and
+iterative rules nonetheless span the identical subspace at all $42$ points of
+the reduced-budget campaign, and again return identical $K$. The agreement of
+Section~\ref{sec:q4} is therefore a property of greedy optimality on the
+matroid, as Proposition~\ref{prop:coset} and
+Section~\ref{sec:classfunction}(ii) predict, and not a consequence of the
+degenerate budget.
+
+We record this explicitly because the converse inference is available and
+wrong: observing agreement at $M=\dim\Qcal$ alone would not have distinguished
+the structural explanation from the degeneracy, since at that budget the
+partition is rule-independent by construction and the span test cannot fail.
+
+\subsection{Cost of reducing the budget}
+
+\begin{table}[htbp]
+\centering
+\input{gen_budget_tradeoff.tex}
+\caption{Effect of reducing the budget by one generator, at the exhaustive rule
+with the NC cost. $\Dmax$ is the largest joint exact-and-approximate sector;
+``retained dim'' is the total dimension of the sectors surviving the exact
+filter; the $K$ range is over the geometries of the scan. Where two values of
+$\Dmax$ appear, they occur at different geometries.}
+\label{tab:tradeoff}
+\end{table}
+
+Three features of Table~\ref{tab:tradeoff} are relevant.
+
+\paragraph{The retained dimension is invariant.}
+The dimension of the retained exact sector, $\sum_{s}\dim(s)$ over sectors
+surviving the exact filter, is unchanged between budgets. This is required:
+that dimension is fixed by $\Ecal$ and the chosen exact sector alone, and the
+LAS rows only subdivide it. Its invariance is used here as a consistency check
+on the two campaigns rather than as a result.
+
+\paragraph{Removing one generator coarsens the partition.}
+\begin{sloppypar}
+$\Dmax$, the largest joint exact-and-approximate sector and hence the largest
+block that must be diagonalised, rises from $120$ to $156$ for $\mathrm{N_2}$, a
+factor of $1.300$ at every geometry, and from $21$ to $27$ for $\mathrm{H_2O}$ at nine
+of ten geometries, a factor of $1.286$. The exception is $\mathrm{H_2O}$ at
+$R=2.5$\,\AA, where $\Dmax=31$ (factor $1.476$); this is also the only $\mathrm{H_2O}$
+geometry at which the reduced budget does not reach the floor discussed below,
+and the two observations have the same origin --- the leading sector there is
+not large enough to absorb the target state. This increase is the direct cost
+of the reduced budget.
+\end{sloppypar}
+
+\paragraph{The coupled dimension falls, but not monotonically.}
+For $\mathrm{N_2}$ the coupled dimension decreases at eight of eleven geometries, the
+range falling from $4$--$26$ to $3$--$25$, since a coarser partition places more
+of the target state in the leading sector. It increases at the remaining three,
+$R=1.7$--$1.9$\,\AA\ ($23\to25$, $18\to19$, $14\to15$). Because the partition at
+fixed budget is identical across rules, an increase in $K$ at reduced budget
+cannot originate in the partition; the only remaining channel is the orbital
+optimisation converging to a different stationary point.
+
+We do not attribute it further. In particular these three geometries are
+\emph{not} those at which the quota rule departs most from the cost-ranked
+rules: the largest $|\Delta K|$ between rules occurs at $R=1.2$\,\AA\ at
+$M=n-\rsp$ and at $R=1.7$\,\AA\ at $M=n-\rsp-1$, and at $R=1.8$\,\AA\ the two
+rules agree exactly at the reduced budget. The budget-induced and rule-induced
+departures therefore do not localise to the same geometries, and there is no
+evidence here that they are the same phenomenon. Both are candidates for the
+multi-start study of Section~\ref{sec:conclusions}, which is the only way to
+establish whether either exceeds the scatter of the optimiser.
+
+\paragraph{$\mathrm{H_2O}$ reaches the floor.}
+At $M=3$ the decoupled energy is already within $\varepsilon_E$ of
+$E_{\mathrm{target}}$ at nine of ten geometries, so $K=1$ and no coupling is
+required. No comparative information about selection rules is available from
+these points, and they are excluded from the Q4(ii) reading for that reason.
+
+\subsection{A consequence for budget selection}
+
+For $\mathrm{H_2O}$ in this basis the reduced budget is not merely tolerable but
+preferable on both axes that the procedure exposes. Dropping from $M=4$ to
+$M=3$ removes one generator, and in exchange $K$ falls from the range $4$--$8$
+to $1$ at nine of ten geometries and $3$ at the tenth, while $\Dmax$ rises from
+$21$ to $27$ (to $31$ at $R=2.5$\,\AA). The coupled problem is thereby
+eliminated at nine of ten geometries at a cost of one moderately larger block.
+
+Whether that exchange is favourable depends on the cost model, and the present
+data do not settle it: the coupled stage scales with $K$ and the number of
+retained sectors, the decoupled stage with $\Dmax$ per block, and the two are
+not reduced to a common measure anywhere in this report. What the data do
+establish is that the trade exists and is not one-sided --- reducing the budget
+is not simply a degradation --- and that the budget is therefore a parameter
+worth scanning rather than fixing at the bound $M=n-\rsp$. For $\mathrm{N_2}$
+the same reduction lowers $K$ at eight of eleven geometries and raises it at
+three, so no comparable statement holds there.

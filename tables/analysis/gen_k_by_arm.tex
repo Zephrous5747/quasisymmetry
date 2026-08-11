@@ -1,0 +1,131 @@
+% h2o NC M=n-\rsp: lower 0, equal 10, higher 0, mean dK = +0.00
+% h2o variance M=n-\rsp: lower 0, equal 10, higher 0, mean dK = +0.00
+% n2 NC M=n-\rsp: lower 5, equal 4, higher 2, mean dK = -0.27
+% n2 variance M=n-\rsp: lower 1, equal 10, higher 0, mean dK = -0.09
+% h2o NC M=n-\rsp-1: lower 0, equal 10, higher 0, mean dK = +0.00
+% h2o variance M=n-\rsp-1: lower 0, equal 10, higher 0, mean dK = +0.00
+% n2 NC M=n-\rsp-1: lower 5, equal 5, higher 1, mean dK = -0.45
+% n2 variance M=n-\rsp-1: lower 1, equal 10, higher 0, mean dK = -0.09
+\begin{longtable}{lrrr}
+\caption{Coupled dimension $K$ by selection rule, geometry, cost function and budget. Each block is headed by its molecule, cost function and budget. ``quota'' is the constrained rule with the splits of Section~\ref{sec:q4}; $\Delta K$ counts are in Table~\ref{tab:dk}.}
+\label{tab:kbyarm}\\
+\hline
+$R$ (\AA) & exhaustive & iterative & quota\\
+\hline
+\endfirsthead
+\multicolumn{4}{l}{\emph{Table \thetable\ continued}}\\
+\hline
+$R$ (\AA) & exhaustive & iterative & quota\\
+\hline
+\endhead
+\hline
+\endfoot
+\multicolumn{4}{l}{}\\
+\multicolumn{4}{l}{\emph{$\mathrm{H_2O}$, NC cost, $M=n-\rsp$}}\\
+\hline
+0.9580 & 4 & 4 & 4\\
+1.1293 & 5 & 5 & 5\\
+1.3007 & 7 & 7 & 7\\
+1.4720 & 8 & 8 & 8\\
+1.6433 & 8 & 8 & 8\\
+1.8147 & 7 & 7 & 7\\
+1.9860 & 5 & 5 & 5\\
+2.1573 & 5 & 5 & 5\\
+2.3287 & 4 & 4 & 4\\
+2.5000 & 5 & 5 & 5\\
+\multicolumn{4}{l}{}\\
+\multicolumn{4}{l}{\emph{$\mathrm{H_2O}$, variance cost, $M=n-\rsp$}}\\
+\hline
+0.9580 & 3 & 3 & 3\\
+1.1293 & 5 & 5 & 5\\
+1.3007 & 6 & 6 & 6\\
+1.4720 & 7 & 7 & 7\\
+1.6433 & 7 & 7 & 7\\
+1.8147 & 6 & 6 & 6\\
+1.9860 & 5 & 5 & 5\\
+2.1573 & 5 & 5 & 5\\
+2.3287 & 4 & 4 & 4\\
+2.5000 & 5 & 5 & 5\\
+\multicolumn{4}{l}{}\\
+\multicolumn{4}{l}{\emph{$\mathrm{N_2}$, NC cost, $M=n-\rsp$}}\\
+\hline
+1.2000 & 23 & 23 & 26\\
+1.3000 & 26 & 26 & 25\\
+1.4000 & 26 & 26 & 26\\
+1.5000 & 26 & 26 & 27\\
+1.6000 & 24 & 24 & 22\\
+1.7000 & 23 & 23 & 21\\
+1.8000 & 18 & 18 & 17\\
+1.9000 & 14 & 14 & 13\\
+2.0000 & 9 & 9 & 9\\
+2.1000 & 7 & 7 & 7\\
+2.2000 & 4 & 4 & 4\\
+\multicolumn{4}{l}{}\\
+\multicolumn{4}{l}{\emph{$\mathrm{N_2}$, variance cost, $M=n-\rsp$}}\\
+\hline
+1.2000 & 20 & 20 & 20\\
+1.3000 & 22 & 22 & 21\\
+1.4000 & 22 & 22 & 22\\
+1.5000 & 23 & 23 & 23\\
+1.6000 & 22 & 22 & 22\\
+1.7000 & 21 & 21 & 21\\
+1.8000 & 17 & 17 & 17\\
+1.9000 & 13 & 13 & 13\\
+2.0000 & 9 & 9 & 9\\
+2.1000 & 7 & 7 & 7\\
+2.2000 & 4 & 4 & 4\\
+\multicolumn{4}{l}{}\\
+\multicolumn{4}{l}{\emph{$\mathrm{H_2O}$, NC cost, $M=n-\rsp-1$}}\\
+\hline
+0.9580 & 1 & 1 & 1\\
+1.1293 & 1 & 1 & 1\\
+1.3007 & 1 & 1 & 1\\
+1.4720 & 1 & 1 & 1\\
+1.6433 & 1 & 1 & 1\\
+1.8147 & 1 & 1 & 1\\
+1.9860 & 1 & 1 & 1\\
+2.1573 & 1 & 1 & 1\\
+2.3287 & 1 & 1 & 1\\
+2.5000 & 3 & 3 & 3\\
+\multicolumn{4}{l}{}\\
+\multicolumn{4}{l}{\emph{$\mathrm{H_2O}$, variance cost, $M=n-\rsp-1$}}\\
+\hline
+0.9580 & 1 & 1 & 1\\
+1.1293 & 1 & 1 & 1\\
+1.3007 & 1 & 1 & 1\\
+1.4720 & 1 & 1 & 1\\
+1.6433 & 1 & 1 & 1\\
+1.8147 & 1 & 1 & 1\\
+1.9860 & 1 & 1 & 1\\
+2.1573 & 1 & 1 & 1\\
+2.3287 & 1 & 1 & 1\\
+2.5000 & 3 & 3 & 3\\
+\multicolumn{4}{l}{}\\
+\multicolumn{4}{l}{\emph{$\mathrm{N_2}$, NC cost, $M=n-\rsp-1$}}\\
+\hline
+1.2000 & 16 & 16 & 15\\
+1.3000 & 18 & 18 & 17\\
+1.4000 & 18 & 18 & 19\\
+1.5000 & 18 & 18 & 18\\
+1.6000 & 17 & 17 & 16\\
+1.7000 & 25 & 25 & 23\\
+1.8000 & 19 & 19 & 19\\
+1.9000 & 15 & 15 & 14\\
+2.0000 & 7 & 7 & 7\\
+2.1000 & 4 & 4 & 4\\
+2.2000 & 3 & 3 & 3\\
+\multicolumn{4}{l}{}\\
+\multicolumn{4}{l}{\emph{$\mathrm{N_2}$, variance cost, $M=n-\rsp-1$}}\\
+\hline
+1.2000 & 11 & 11 & 11\\
+1.3000 & 15 & 15 & 14\\
+1.4000 & 17 & 17 & 17\\
+1.5000 & 16 & 16 & 16\\
+1.6000 & 15 & 15 & 15\\
+1.7000 & 15 & 15 & 15\\
+1.8000 & 11 & 11 & 11\\
+1.9000 & 7 & 7 & 7\\
+2.0000 & 5 & 5 & 5\\
+2.1000 & 4 & 4 & 4\\
+2.2000 & 2 & 2 & 2\\
+\end{longtable}

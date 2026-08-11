@@ -1,0 +1,764 @@
+%=====================================================================
+% Self-contained report. No external document is required to read it.
+% Build:  cd tables/analysis && latexmk -pdf report_las_sto3g.tex
+%=====================================================================
+\documentclass[11pt]{article}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue!55!black,
+            urlcolor=blue!55!black]{hyperref}
+
+\newcommand{\Ht}{\widetilde H}
+\newcommand{\Uh}{\widehat U}
+\newcommand{\FF}{\mathbb F_2}
+\newcommand{\Ecal}{\mathcal E}
+\newcommand{\Qcal}{\mathcal Q}
+\newcommand{\Ccal}{\mathcal C}
+\newcommand{\Gcal}{\mathcal G}
+\newcommand{\Bcal}{\mathcal B}
+\newcommand{\Hcal}{\mathcal H}
+\newcommand{\Scal}{\mathcal S}
+\newcommand{\Zb}{\bar Z}
+\newcommand{\Edec}{E_{\mathrm{dec}}}
+\newcommand{\Dmax}{D_{\max}}
+\newcommand{\rsp}{r_{\mathrm{sp}}}
+\usepackage{longtable}
+\usepackage{amsthm}
+\newtheorem{proposition}{Proposition}
+
+\title{Admissibility conditions for a noncommutativity-ranked search for\\
+local approximate parity symmetries, with an exhaustive control:\\
+a numerical assessment on STO-3G $\mathrm{H_2O}$ and $\mathrm{N_2}$}
+\author{}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\begin{sloppypar}
+We assess a search procedure that selects a fixed number $M$ of local
+approximate parity symmetries (LASs) --- diagonal Pauli-$Z$ products that
+almost commute with an electronic Hamiltonian --- by ranking candidates on a
+state-specific noncommutativity (NC) score, quotienting out the exactly
+conserved parities, and measuring the resulting sector structure through a
+coupled dimension $K$. Three preconditions of the procedure are identified and
+tested. First, the exact generators must commute with the Hamiltonian
+\emph{at the geometry in use}; we show that storing point-group generators as
+fixed orbital-index sets violates this along a dissociation scan, introduce the
+retained reference weight $W$ as a run-time test, and find $W=0$ at every
+$\mathrm{N_2}$ geometry of a prior calculation. Deriving the supports per
+geometry from the Hartree--Fock (HF) irreducible-representation labels restores
+$W=1$ at all $126$ points and with it the convergence of the $K$ criterion.
+Second, the orbital rotation must map the exact set to diagonal Pauli products;
+unrestricted $\mathrm{SO}(n)$ rotation does not, and we measure the resulting
+leakage. Third, the LAS budget must satisfy $M\le n-\rsp$ on the spatial
+subregister; we show that a prior configuration exceeded it by one row, and
+correct it. An exhaustive control establishes that the polynomial current-frame
+candidate library attains the exhaustive optimum, and we prove this is
+guaranteed: the cost is constant on cosets of the exact group, so the candidate
+classes form a linear matroid on which greedy ranking is optimal at every
+budget. Two campaigns of $126$ points each, at $M=n-\rsp$ and $M=n-\rsp-1$,
+find the two cost-ranked rules identical in cost, span and $K$ at all $84$
+paired points, while a quota-constrained rule costs strictly more to select
+yet never needs a larger coupled space.
+\end{sloppypar}
+\end{abstract}
+
+%=====================================================================
+\section{Introduction}
+\label{sec:intro}
+
+Exact Abelian symmetries of an electronic Hamiltonian that are diagonal in an
+occupation basis --- particle-number parities, point-group parities --- can be
+mapped to single qubits by a Clifford circuit and removed exactly. Operators
+that \emph{almost} commute with the Hamiltonian admit no such exact treatment,
+but fixing their eigenvalues defines a block decomposition whose diagonal
+blocks are cheaper to diagonalise than the parent problem, at the cost of
+discarding inter-block couplings. The procedure assessed here selects a fixed
+number $M$ of such local approximate parity symmetries (LASs) by ranking
+candidates on a state-specific noncommutativity score, and quantifies the
+quality of the resulting decomposition by the number $K$ of block eigenstates
+that must be recoupled to recover the target energy to a stated tolerance.
+
+The procedure is stated in full in Sec.~\ref{sec:method}; no other document is
+required. This report addresses four questions:
+
+\begin{description}[leftmargin=2.6em,style=nextline,itemsep=2pt]
+\item[Q1] Under what conditions is the exact-parity quotienting numerically
+  valid, and can a violation be detected at run time?
+\item[Q2] Is unrestricted $\mathrm{SO}(n)$ orbital rotation admissible when the
+  exact set contains point-group parities?
+\item[Q3] Does the polynomial candidate library, built from the current binary
+  frame, reproduce an exhaustive scan over all parity classes?
+\item[Q4] Does the choice of selection rule --- a quota-constrained greedy
+  scan, an iterative re-ranked scan over the polynomial library, or an
+  exhaustive scan --- change the pool selected or the coupled dimension $K$?
+\end{description}
+
+\noindent
+Q1--Q4 are answered from the data reported here; Q4 is separated into a
+question about the selected pool, which is settled, and one about $K$, which is
+settled only in part and is reported as an observation (Sec.~\ref{sec:q4}). A
+prior calculation on these systems is superseded: its searches never satisfied
+the convergence criterion, so no coupled dimension was determined there and
+none is quoted.
+
+Acronyms used throughout: LAS (local approximate parity symmetry), NC
+(noncommutativity), FCI (full configuration interaction), HF (Hartree--Fock),
+RHF (restricted HF), MO (molecular orbital), JW (Jordan--Wigner), RREF (reduced
+row-echelon form), PES (potential energy surface).
+
+%=====================================================================
+\section{Method}
+\label{sec:method}
+
+\subsection{Registers, Hamiltonian, orbital rotation}
+
+Let $n$ be the number of spatial orbitals and $N=2n$ the number of occupation
+qubits under the JW mapping with interleaved ordering: qubit $2p$ carries
+spin-orbital $p\alpha$ and qubit $2p+1$ carries $p\beta$, $p=0,\dots,n-1$.
+For an orbital rotation $U\in\mathrm{SO}(n)$ with number-conserving many-body
+lift $\Uh$, the rotated Hamiltonian is
+\begin{equation}
+\Ht(U)=\Uh^{\dagger}H\Uh .
+\label{eq:Htilde}
+\end{equation}
+$U$ is parameterised exponentially, not as a product of plane rotations:
+\begin{equation}
+U=\exp A(x),\qquad
+A(x)_{ij}=x_k,\quad A(x)_{ji}=-x_k,\quad A(x)_{ii}=0,
+\label{eq:expparam}
+\end{equation}
+where $k$ indexes an ordered list of pairs $(i,j)$ with $i<j$. The list is
+taken in row-major upper-triangular order,
+$(0,1),(0,2),\dots,(0,n-1),(1,2),\dots,(n-2,n-1)$, and comprises either all
+$\binom{n}{2}$ pairs (\emph{unrestricted} packing) or only those pairs whose
+two orbitals carry the same point-group irreducible representation
+(\emph{irrep-block} packing), the surviving pairs retaining that order. Because
+the generators $E_{ij}-E_{ji}$ do not commute, Eq.~\eqref{eq:expparam} is not
+equal to the sequential product of Givens rotations through the same angles;
+the two agree only to first order in $x$. The parameter vector $x$ recorded in
+the artifacts of Appendix~\ref{sec:artifacts} is to be read through
+Eq.~\eqref{eq:expparam}.
+The rotation acts on the MO coefficient matrix as
+\begin{equation}
+C_{\mathrm{MO}}\;\longmapsto\;C_{\mathrm{MO}}\,U^{\mathsf T}.
+\label{eq:convention}
+\end{equation}
+
+\subsection{Parity rows, exact group, quotient}
+
+A binary row $g=(g_1,\dots,g_N)\in\FF^{N}$ labels the diagonal Pauli operator
+\begin{equation}
+Z(g)=\prod_{p=1}^{N}Z_p^{\,g_p},
+\label{eq:Zg}
+\end{equation}
+and multiplication of such operators is addition of rows over $\FF$. Suppose
+$r$ independent exact parities are known,
+\begin{equation}
+E_a=Z(e_a),\qquad [\Ht(U),E_a]=0,\qquad a=1,\dots,r,
+\label{eq:exact}
+\end{equation}
+and set
+\begin{equation}
+\Ecal=\operatorname{span}_{\FF}\{e_1,\dots,e_r\}\subseteq\FF^{N},
+\qquad
+\Qcal=\FF^{N}/\Ecal\;\cong\;\FF^{\,N-r}.
+\label{eq:quotient}
+\end{equation}
+LASs are classes in $\Qcal$, so the budget is bounded by
+\begin{equation}
+0\le M\le N-r .
+\label{eq:budget}
+\end{equation}
+A candidate $g$ is accepted into the pool $\Gcal$ only if it increases the
+rank of the stacked matrix,
+\begin{equation}
+\operatorname{rank}\begin{pmatrix}e_1;\dots;e_r;\,g_1;\dots;g_m;\,g\end{pmatrix}
+>
+\operatorname{rank}\begin{pmatrix}e_1;\dots;e_r;\,g_1;\dots;g_m\end{pmatrix},
+\label{eq:ranktest}
+\end{equation}
+which in one test excludes exact rows, rows dependent on already accepted
+LASs, and exact-dressed duplicates $g'=g+e$ with $e\in\Ecal$. The last
+exclusion is legitimate because the cost is constant on the cosets of $\Ecal$
+(Proposition~\ref{prop:coset}): $g$ and $g'$ define the same partition of that
+sector.
+
+\subsection{Cost functions and the reference state}
+
+The target state $\Psi_{\mathrm{target}}$ is the exact FCI ground state of
+$\Ht(U)$ in the fixed particle-number, spin-projection and exact-parity sector;
+$E_{\mathrm{target}}$ is its energy. For a normalised reference
+$|\Psi\rangle$, the NC score of a candidate is
+\begin{equation}
+c^{\mathrm{NC}}_{\Psi,U}(g)=\bigl\|\,[\Ht(U),Z(g)]\,|\Psi\rangle\,\bigr\|^{2},
+\label{eq:nc}
+\end{equation}
+lower being preferred, and the alternative objective is the parity variance
+\begin{equation}
+c^{\mathrm{var}}_{\Psi,U}(g)=1-\langle\Psi|Z(g)|\Psi\rangle^{2}.
+\label{eq:var}
+\end{equation}
+Both vanish when $Z(g)$ is an exact symmetry with a definite eigenvalue on
+$\Psi$. They are evaluated in the determinant basis at fixed
+$(N_\alpha,N_\beta)$, where $Z(g)$ is diagonal with signs $z_i=\pm1$, so that
+\begin{equation}
+\bigl([\Ht,Z(g)]\Psi\bigr)_i=\bigl(\Ht(z\odot\Psi)\bigr)_i-z_i\bigl(\Ht\Psi\bigr)_i .
+\label{eq:commutator}
+\end{equation}
+$\Ht\Psi$ is formed once, after which Eq.~\eqref{eq:nc} costs one Hamiltonian
+application per candidate and Eq.~\eqref{eq:var} costs none. The commutator is
+anti-Hermitian, so $[\Ht,Z(g)]|\Psi\rangle$ has a purely imaginary expectation
+structure; only its norm enters, and all arithmetic here is real.
+\input{section_cost_class_function.tex}
+
+
+\subsection{Candidate libraries and the ranked scan}
+
+At macroiteration $t$ the search maintains a full binary frame
+$F^{(t)}=(f^{(t)}_1;\dots;f^{(t)}_N)\in\mathrm{GL}(N,\FF)$ containing a basis of
+$\Ecal$, the current $M$ LAS rows, and $N-r-M$ auxiliary rows. The
+\emph{polynomial} candidate library consists of the current-frame single rows
+and their pairwise sums,
+\begin{equation}
+\begin{gathered}
+\Ccal^{(t)}=\{f^{(t)}_j\}_{j\le N}\;\cup\;\{f^{(t)}_j+f^{(t)}_k\}_{j<k},\\[2pt]
+|\Ccal^{(t)}|=\tfrac{N(N+1)}{2},
+\end{gathered}
+\label{eq:Cpoly}
+\end{equation}
+whereas the \emph{exhaustive} library is the complete quotient,
+\begin{equation}
+\Ccal_{\mathrm{full}}=\{\bar g\in\FF^{\,N-r}:\bar g\neq0\},
+\quad |\Ccal_{\mathrm{full}}|=2^{\,N-r}-1 .
+\label{eq:Cfull}
+\end{equation}
+In either mode the library is sorted by ascending cost and scanned in full,
+applying Eq.~\eqref{eq:ranktest}. The first $M$ accepted rows are the LAS pool
+$\Gcal^{(t+1)}$. \emph{The scan does not stop there}: it continues until
+$N-r$ rows have been accepted, forming a complete ordered quotient basis
+$\Bcal^{(t+1)}$. The reason is frame construction, not the state route: the
+trailing $N-r-M$ rows become the auxiliary axes of the next frame
+$F^{(t+1)}$, and hence define the next current-frame neighbourhood
+Eq.~\eqref{eq:Cpoly}. Continuing the same ranked scan removes what would
+otherwise be an arbitrary per-iteration choice of completion rows. Ties are
+broken deterministically by ascending (cost, frame index).
+
+\subsection{Orbital objective}
+
+The reference is reconstructed at every trial rotation --- here as the exact
+FCI ground state of $\Ht(U)$ restricted to the target sector --- and the
+orbital objective is the generator sum
+\begin{equation}
+C_A(U;\Gcal)=\sum_{i=1}^{M}c_{\Psi(U),U}\bigl(g_i\bigr),
+\qquad
+U^{(t)}=\arg\min_U C_A\bigl(U;\Gcal^{(t)}\bigr).
+\label{eq:objective}
+\end{equation}
+Equation~\eqref{eq:objective} is a sum over a chosen generator list and is
+therefore basis dependent: two lists spanning the same quotient subspace may
+give different values. It is not an invariant of the LAS partition.
+
+\subsection{Clifford reduction, decoupled energy, coupled dimension}
+
+A Clifford circuit maps the $r$ exact rows and the $M$ LAS rows to distinct
+single-qubit $Z$ operators. Fixing the $r$ exact labels to the physical values
+$\boldsymbol e$ is an exact reduction; fixing the $M$ LAS labels to
+$\boldsymbol s$ additionally discards couplings between approximate sectors and
+is therefore an approximation. The resulting block acts on
+$N_{\mathrm{tail}}=N-r-M$ qubits. $\Edec$ denotes the lowest eigenvalue over
+the retained blocks.
+
+To quantify the approximation, the block eigenstates $|\phi_j\rangle$ of the
+fixed exact sector are ordered by decreasing target weight
+\begin{equation}
+w_j=\bigl|\langle\phi_j|\Psi_{\mathrm{target}}\rangle\bigr|^{2},
+\label{eq:wj}
+\end{equation}
+the subspace matrices $H^{(K)}_{ij}=\langle\phi_i|\Ht(U)|\phi_j\rangle$ are
+formed, and the coupled dimension $K$ is the smallest integer satisfying
+\begin{equation}
+\lambda_{\min}\bigl(H^{(K)}\bigr)-E_{\mathrm{target}}<\varepsilon_E,
+\qquad \varepsilon_E=1.6\times10^{-3}\ \mathrm{Ha}.
+\label{eq:K}
+\end{equation}
+$K$ is a retrospective benchmark requiring knowledge of the target state; it is
+not itself a deployable selection rule.
+
+\subsection{The spatial subregister}
+\label{sec:subregister}
+
+The implementation examined here represents LAS candidates exclusively as
+\emph{spin-symmetric} products
+\begin{equation}
+\Zb_p=Z_{p\alpha}Z_{p\beta},
+\end{equation}
+that is, inside the image of the linear embedding
+$\iota:\FF^{\,n}\hookrightarrow\FF^{\,N}$ defined by
+\begin{equation}
+\bigl(\iota(x)\bigr)_{2p}=\bigl(\iota(x)\bigr)_{2p+1}=x_p,
+\qquad p=0,\dots,n-1,
+\label{eq:iota}
+\end{equation}
+i.e.\ each spatial bit is duplicated onto both spin qubits of that orbital.
+This is a hard limitation of the implementation, not a run-time option: the
+binary frame is constructed over $n$ bits and every generator is emitted as a
+$Z$ product over spatial orbital indices, so no code path can return a
+spin-resolved row such as $Z_{p\alpha}$ alone.
+
+Writing $\Ecal_{\mathrm{sp}}=\iota^{-1}(\Ecal)$ and
+$\rsp=\dim\Ecal_{\mathrm{sp}}$, the admissible budget inside the subregister is
+\begin{equation}
+M\le n-\rsp ,
+\label{eq:budget-sp}
+\end{equation}
+in general stronger than Eq.~\eqref{eq:budget}. Note that total particle parity
+\begin{equation}
+\mathbf 1=\prod_{p}\Zb_p=(-1)^{\hat N}=P_\alpha\oplus P_\beta
+\label{eq:allones}
+\end{equation}
+lies in $\Ecal_{\mathrm{sp}}$ whenever the spin-resolved number parities
+$P_\alpha,P_\beta$ belong to $\Ecal$.
+
+\subsection{Retained reference weight}
+\label{sec:W}
+
+We introduce the diagnostic
+\begin{equation}
+W=\sum_{j}w_j ,
+\label{eq:W}
+\end{equation}
+summed over all block eigenstates retained after exact tapering. If the pinned
+operators are genuine symmetries of $\Ht(U)$ and the pinned sector is the one
+containing $\Psi_{\mathrm{target}}$, then the retained states span that sector
+and $W=1$ identically. If $W<1$, a fraction $1-W$ of the target state lies
+outside the retained space and is unreachable by any $K$, so Eq.~\eqref{eq:K}
+cannot be satisfied however the pool is chosen. $W$ is therefore a sufficient
+run-time test of the validity of the exact quotienting, at the cost of one
+overlap sum. We adopt $1-W<10^{-4}$ as a precondition.
+
+%=====================================================================
+\section{Computational details}
+\label{sec:details}
+
+\paragraph{Systems and geometries.}
+$\mathrm{H_2O}$/STO-3G: $n=7$, $N=14$, $N_\alpha=N_\beta=5$, $C_{2v}$, symmetric
+stretch at fixed $\angle\mathrm{HOH}=104.5^{\circ}$, ten geometries uniformly
+spaced from $R_{\mathrm{OH}}=0.958$\,\AA\ to $2.5$\,\AA\ in steps of
+$(2.5-0.958)/9=0.171\overline{3}$\,\AA. Exact set $r=4$:
+$P_\alpha,P_\beta,Q_{B1},Q_{B2}$.
+$\mathrm{N_2}$/STO-3G: $n=10$, $N=20$, $N_\alpha=N_\beta=7$, $D_{2h}$, eleven
+geometries $R_{\mathrm{NN}}=1.2(0.1)2.2$\,\AA. Exact set $r=5$:
+$P_\alpha,P_\beta,Q_{\pi x},Q_{\pi y},Q_u$. The point-group parity $Q_\Gamma$ is
+the product of $\Zb_p$ over the orbitals belonging to the irreducible
+representations collected in $\Gamma$.
+
+\paragraph{Selection rules and grid size.}
+Two rules are implemented. The \emph{greedy quota} selects
+$n_{\mathrm{singles}}$ single-$\Zb$ and $n_{\mathrm{quartets}}$ pair rows once,
+at the initial frame, in one pass (a variant additionally forbids two selected
+rows to share an orbital). The \emph{iterative} rule performs the ranked scan
+of Sec.~\ref{sec:method} anew at every macroiteration. With three rule variants
+and two objectives at $10+11=21$ geometries, the grid comprises $126$ points.
+
+\paragraph{Initialisation and determinism.}
+The orbital basis is the canonical RHF MOs of the geometry. The initial binary
+frame is $F^{(0)}=I$, meaning the frame rows are the unit vectors of the
+spatial parity register, i.e.\ the single-orbital parities $\Zb_p$. The initial
+rotation is the identity, $x^{(0)}=0$. The orbital optimiser is L-BFGS-B with
+finite-difference gradients, step tolerance $10^{-5}$, gradient tolerance
+$10^{-6}$, at most $100$ iterations. At most $20$ macroiterations are performed;
+the search stops when the LAS quotient span is unchanged for two consecutive
+macroiterations. At most $500$ eigenstates are computed per block. No random
+number generator enters the selection or the optimisation: given the geometry
+and the settings, the calculation is deterministic.
+
+\paragraph{Exact sector.}
+The pinned exact sector is the one containing the aufbau reference determinant,
+obtained by applying the Clifford map to its occupation string. It is not
+chosen by sector size.
+
+\paragraph{Software.}
+Integrals, RHF, orbital symmetry labels and FCI from PySCF; qubit operators and
+the Clifford construction from OpenFermion and an in-house package. Exact
+version identifiers are recorded in the artifact manifest of
+Appendix~\ref{sec:artifacts}.
+
+%=====================================================================
+\section{Q1: validity of the exact quotienting}
+\label{sec:q1}
+
+\subsection{Failure mode}
+Equation~\eqref{eq:exact} demands $[\Ht(U),E_a]=0$. In the prior calculation the
+point-group generator supports were stored as fixed orbital index sets, derived
+once at a single reference geometry. MO orderings cross along both dissociation
+scans, so at other geometries those indices designate orbitals of different
+irreducible representations, and the corresponding $Z$ products do not commute
+with $\Ht(U)$. The exact tapering then projects onto a sector that does not
+contain the target state, and Eq.~\eqref{eq:K} becomes unsatisfiable.
+
+\begin{table}[htbp]
+\centering
+\caption{Retained reference weight $W$ in the prior calculation (unrestricted
+packing, iterative rule, NC objective), against agreement of the stored
+generator supports with the HF irreducible-representation labels at each
+geometry. Where the supports disagree, Eq.~\eqref{eq:K} is not satisfied and no
+coupled dimension is determined.}
+\label{tab:q1}
+\begin{tabular}{lccc}
+\toprule
+$R$ (\AA) & supports agree & $W$ & Eq.~\eqref{eq:K} satisfied \\
+\midrule
+\multicolumn{4}{l}{\emph{$\mathrm{H_2O}$}}\\
+$0.958,\ 1.1293,\ 1.3007$ & yes & $1.0000$ & yes \\
+1.4720 & no & 0.9255 & no \\
+1.6433 & no & 0.8855 & no \\
+1.8147 & no & 0.8424 & no \\
+1.9860 & no & 0.8054 & no \\
+2.1573 & no & 0.7801 & no \\
+2.3287 & no & 0.7655 & no \\
+2.5000 & no & 0.0242 & no \\
+\midrule
+\multicolumn{4}{l}{\emph{$\mathrm{N_2}$, all eleven geometries}}\\
+$1.2$--$2.2$ & no & $\mathbf{0.0000}$ & no \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Two features identify the mechanism unambiguously. For $\mathrm{H_2O}$ the
+boundary between $W=1$ and $W<1$ coincides exactly with the $3a_1/1b_1$ level
+crossing at $R=1.472$\,\AA. For $\mathrm{N_2}$ the stored supports are already
+wrong at $R=1.2$\,\AA\ --- the $3\sigma_g$ orbital occupies index $4$, so the
+correct supports are $Q_{\pi x}=\{6,7\}$ and $Q_u=\{1,3,5,6,9\}$ --- and $W=0$
+throughout: the retained space is orthogonal to the target state.
+
+\subsection{Correction}
+Deriving the supports at each geometry from the point-group labels of the
+converged HF orbitals, and pinning the sector containing the reference
+determinant, gives $W=1$ and a correctly counted exact block at all $126$
+points, with Eq.~\eqref{eq:K} satisfied at every one. Convergence is restored
+throughout. The resulting coupled dimensions are obtained at a budget that
+violates Eq.~\eqref{eq:budget-sp} (Sec.~\ref{sec:q4}) and are therefore not
+interpreted here.
+
+One structural observation is independent of the budget: the largest retained
+block is
+\begin{equation}
+\Dmax=\binom{n}{N_\alpha}=21\ (\mathrm{H_2O}),\qquad 120\ (\mathrm{N_2}),
+\end{equation}
+at every geometry, rule, objective and packing. This is the seniority-zero
+block, in which every spatial orbital is doubly occupied or empty: when the
+span of $\Ecal\cup\Gcal$ exhausts the register, each block is a single
+occupation-parity pattern and the closed-shell pattern is always the largest.
+
+%=====================================================================
+\section{Q2: admissible orbital rotations}
+\label{sec:q2}
+
+A point-group parity $Q_\Gamma$ is defined by a set of orbital indices. Under
+an orbital rotation the operator is carried to $\Uh^{\dagger}Q_\Gamma\Uh$. If
+$U$ is block diagonal in the irreducible representations, this is again a
+product of the same $\Zb_p$ and remains a diagonal Pauli operator, so the
+Clifford construction of Sec.~\ref{sec:method} applies unchanged. If $U$ mixes
+orbitals of different irreducible representations, the transformed operator is
+no longer diagonal in the occupation basis, is not a Pauli $Z$ product, and
+cannot be mapped to a single qubit by the Clifford circuit used. Spin-resolved
+number parities are unaffected, since any spin-conserving rotation preserves
+$N_\alpha$ and $N_\beta$.
+
+The consequence is measurable. At a fixed geometry the exact generators are
+identical across selection rules, and only the optimised $U$ differs; the
+leakage in Table~\ref{tab:q2} is therefore attributable to the rotation alone.
+It grows monotonically with bond length, consistent with the optimiser
+exploiting inter-irrep mixing more strongly as correlation increases.
+
+\begin{table}[htbp]
+\centering
+\caption{Exact-symmetry leakage $1-W$ under unrestricted $\mathrm{SO}(n)$
+rotation ($\mathrm{H_2O}$, greedy disjoint quota, variance objective; generator
+supports correct at these geometries). The irrep-block packing gives $W=1$ at
+all of them.}
+\label{tab:q2}
+\begin{tabular}{lcccccc}
+\toprule
+$R$ (\AA) & 1.1293 & 1.3007 & 1.4720 & 1.6433 & 1.8147 & 1.9860 \\
+\midrule
+$W$   & 0.9763 & 0.9522 & 0.9169 & 0.8667 & 0.8073 & 0.7154 \\
+$1-W$ & 2.4\%  & 4.8\%  & 8.3\%  & 13.3\% & 19.3\% & 28.5\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Relation to Table~\ref{tab:q1}.}
+Tables~\ref{tab:q1} and~\ref{tab:q2} both report unrestricted-packing runs and
+must not be compared row by row. $W$ depends on the optimised rotation, which
+depends on the selection rule and objective; Table~\ref{tab:q1} lists the
+iterative rule with the NC objective, Table~\ref{tab:q2} the greedy disjoint
+quota with the variance objective. The two tables isolate different causes:
+Table~\ref{tab:q1} the incorrect generator supports, Table~\ref{tab:q2} the
+rotation, at geometries where the supports are correct.
+
+Where the unrestricted packing does retain the reference it reproduces the
+irrep-block result: of the $119$ points for which both packings completed
+successfully, $118$ agree exactly in $K$ and one differs by a single unit.
+
+%=====================================================================
+\section{Q3: exhaustive control}
+\label{sec:q3}
+
+\subsection{Construction}
+At each point's converged orbitals, every class of $\Ccal_{\mathrm{full}}$ in
+the spatial subregister was scored with the objective that run had used, using
+Eq.~\eqref{eq:commutator}; the ranked scan with the test
+Eq.~\eqref{eq:ranktest} was repeated on the complete ranking; and the outcome
+was compared with the polynomial pool. The control was run with the same exact
+set as the calculation under test, giving pool sizes $2^{\,n-\rsp}-1=31$
+($\mathrm{H_2O}$) and $127$ ($\mathrm{N_2}$); with $\mathbf 1$ of
+Eq.~\eqref{eq:allones} restored to $\Ecal$ (Sec.~\ref{sec:q4}) the
+corresponding sizes would be $15$ and $63$.
+
+A correctness gate re-scores the polynomial pool's own rows and compares with
+the values recorded by the production code. $121$ of $126$ points reproduce
+them to within $10^{-4}$ relative. The five exceptions are $\mathrm{H_2O}$ at
+$R\ge2.33$\,\AA, where the FCI gap is $E_1-E_0=4.5\times10^{-4}$\,Ha at
+$R=2.5$\,\AA: the reference is then not determined by energy alone and
+independent solvers may return different vectors from the near-degenerate
+manifold. Those points are excluded.
+
+Of the remaining points, the total-objective comparison requires both pools to
+be scored at the \emph{same} orbitals. This holds for the $41$ surviving
+iterative points. It does not hold for the greedy points, whose recorded costs
+were evaluated before orbital optimisation (Sec.~\ref{sec:q4}, item iii), so
+they are excluded from this comparison.
+
+\subsection{Result}
+Over those $41$ points,
+\begin{equation}
+\frac{\sum_i c\bigl(g_i^{\,\mathrm{exhaustive}}\bigr)}
+     {\sum_i c\bigl(g_i^{\,\mathrm{polynomial}}\bigr)}
+\in\bigl[1-5\times10^{-12},\;1\bigr],
+\end{equation}
+i.e.\ the two totals agree to $10^{-9}$ at every one.
+
+\subsection{Why this is a non-trivial test}
+\label{sec:matroid}
+Linear independence over $\FF$ defines a matroid on the set of parity classes.
+Equation~\eqref{eq:ranktest} is precisely the greedy rank test for that
+matroid, and greedy selection in ascending weight on a matroid returns a
+minimum-weight independent set of size $M$ of the ground set it is. The exhaustive and
+given, for every $M$ (Section~\ref{sec:classfunction}(ii)). polynomial scans are the same greedy algorithm on the same matroid, differing
+only in ground set: $\Ccal_{\mathrm{full}}$ versus $\Ccal^{(t)}$. Equality of
+the two totals therefore states that the current-frame neighbourhood
+$\Ccal^{(t)}$ contains a minimum-weight basis of the full quotient matroid.
+
+The span comparison is degenerate at this budget and the total-objective
+test is not; both statements are made in general form in
+Section~\ref{sec:classfunction}, and are not repeated here.
+
+%=====================================================================
+\input{section_q4_comparison.tex}
+
+%=====================================================================
+\input{section_budget_tradeoff.tex}
+
+%=====================================================================
+\section{Verification of the implementation}
+\label{sec:verification}
+
+Three checks with independently known answers were performed.
+
+\begin{enumerate}[leftmargin=1.8em,itemsep=2pt]
+\item \textbf{Sector dimensions.} The dimension of the fully pinned exact
+  sector was computed by direct enumeration of determinants at fixed
+  $(N_\alpha,N_\beta)$ and compared with the dimension obtained from the
+  Clifford tapering; the two agree for both systems and for every subgroup of
+  the exact set.
+\item \textbf{Quotient enumeration.} The number of distinct nonzero classes
+  produced by the coset-representative routine was checked against
+  $2^{\,N-r}-1$ at three register sizes, with exact agreement.
+\item \textbf{Rotation convention.} Equation~\eqref{eq:convention} was
+  determined empirically rather than assumed, by requiring the recorded values
+  of Eq.~\eqref{eq:nc} to be reproduced; the transpose alternative is wrong by
+  up to a factor of $78$. We note that the FCI energy is invariant under
+  orbital rotation and therefore cannot validate the convention: only a
+  rotation-sensitive quantity can.
+\end{enumerate}
+
+Two checks remain outstanding and are recorded as such: a brute-force
+verification of Eq.~\eqref{eq:commutator} against explicit sparse construction
+of $Z(g)$ and $[\Ht,Z(g)]$ for a small case, and an independent check of the
+Givens parameterisation against a directly constructed rotation matrix.
+
+%=====================================================================
+\section{Reproducibility record}
+\label{sec:record}
+
+The following are recorded for all $126$ points; a representative point is
+given in full ($\mathrm{N_2}$, $R=1.8000$\,\AA, irrep-block packing, iterative
+rule, NC objective). Machine-readable records for every point are produced by
+the script listed in Appendix~\ref{sec:artifacts}.
+
+\begin{description}[leftmargin=1.6em,style=nextline,itemsep=3pt]
+
+\item[Frame and exact set.]
+Qubit ordering: interleaved JW, $2p\mapsto p\alpha$, $2p+1\mapsto p\beta$.
+Rotation convention: Eq.~\eqref{eq:convention}, Givens parameterisation.
+Allowed rotation group: intra-irrep blocks of $D_{2h}$.
+Exact spatial rows as support masks $\{192,288,617\}$, i.e.\
+$Q_{\pi x}=\{6,7\}$, $Q_{\pi y}=\{5,8\}$, $Q_u=\{0,3,5,6,9\}$; with
+$P_\alpha,P_\beta$ this gives $r=5$.
+Exact sector eigenvalue label $(1,1,0,0,0)$.
+
+\item[Problem specification.]
+$N=20$ qubits, $n=10$ spatial orbitals, $r=5$, $M=7$.
+Candidate mode: polynomial current-frame, Eq.~\eqref{eq:Cpoly}, of size $55$ in
+the spatial subregister.
+Initial frame $F^{(0)}=I$ (rows $\Zb_p$); initial rotation $x^{(0)}=0$.
+Completion rule: the ranked scan is continued to $N-r$ accepted rows, with no
+separate completion routine.
+Tie-break: ascending (cost, frame index).
+
+\item[Per-iteration scan.]
+$20$ macroiterations. The complete candidate list, its score, its sorted
+position and the accept/reject reason are recorded for every candidate at every
+macroiteration ($16$ entries at macroiteration $0$; $41$--$42$ thereafter).
+Final LAS rows $\{118,481,733,528,822,937,777\}$; no auxiliary rows, since
+$M=n-\rsp$ in the subregister.
+
+\item[Binary spans.]
+Intermediate and final spans recorded at all $20$ macroiterations, both for
+$\Ecal\cup\Gcal$ and for the complete ranked basis $\Bcal$. Final span in RREF:
+$\{1,2,4,8,16,32,64,128,256,512\}$, i.e.\ the full register.
+
+\item[Orbitals, optimiser, state.]
+Rotation parameters
+$(-0.01702,\,-0.00033,\,-0.02624,\,0.00140,\,-0.23293,\,0.03532)$.
+$C_A$ before $0.514304$, after $0.308498$.
+Optimiser L-BFGS-B, exit on relative reduction of the objective below the
+machine-precision threshold, step tolerance $10^{-5}$, gradient tolerance
+$10^{-6}$, $87$ recorded objective evaluations.
+Reference reconstructed at each trial rotation as the exact FCI ground state;
+$E_{\mathrm{FCI}}=-107.483457$\,Ha.
+Exact-symmetry leakage $1-W=4\times10^{-16}$.
+
+\item[Decoupled energy and coupled dimension.]
+$\Edec=-107.411543$\,Ha. The full sequence $\lambda_{\min}(H^{(K)})$ is
+recorded, beginning
+\[
+-107.408879,\quad -107.439625,\quad -107.453531,\quad -107.469484\ \mathrm{Ha}.
+\]
+$500$ eigenstates per block, $\varepsilon_E=1.6\times10^{-3}$\,Ha.
+
+\end{description}
+
+%=====================================================================
+\section{Conclusions}
+\label{sec:conclusions}
+
+\begin{enumerate}[leftmargin=1.8em,itemsep=4pt]
+
+\item Exact-parity quotienting is valid only if the stored generators commute
+  with the rotated Hamiltonian \emph{at the geometry in use}. Generators stored
+  as fixed orbital-index sets fail this along a dissociation scan, silently,
+  and the failure destroys the convergence of Eq.~\eqref{eq:K} rather than
+  degrading it. More generally, identifying symmetry generators by orbital
+  index is incompatible with PES scans of any kind: a level crossing
+  redefines the operator without any change in the stored data. Generators must
+  be re-derived from orbital symmetry labels at each geometry, or carried
+  between geometries by an explicit continuation.
+
+\item The retained reference weight $W$ of Eq.~\eqref{eq:W} is a sufficient and
+  inexpensive run-time test for this failure. It costs one overlap sum, and
+  $W<1$ makes Eq.~\eqref{eq:K} unsatisfiable irrespective of the pool. Deriving
+  supports per geometry from the HF irreducible-representation labels restores
+  $W=1$ at all $126$ points and with it the convergence of the criterion.
+
+\item Unrestricted $\mathrm{SO}(n)$ rotation is inadmissible when the exact set
+  contains point-group parities: a rotation mixing different irreducible
+  representations carries the generator out of the diagonal Pauli group, so the
+  Clifford reduction no longer applies. The measured leakage reaches $28.5\%$,
+  and no compensating benefit is observed --- of $119$ paired points, $118$
+  agree exactly in $K$ with the irrep-block packing.
+
+\item The polynomial current-frame library of Eq.~\eqref{eq:Cpoly} recovers the
+  exhaustive optimum, and this is guaranteed rather than fortuitous. By
+  Proposition~\ref{prop:coset} the cost is constant on cosets of $\Ecal$, so it
+  is well defined on $\Qcal$; the classes accepted by Eq.~\eqref{eq:ranktest}
+  are the independent sets of a linear matroid over $\FF$; and greedy ranking
+  by a well-defined weight on a matroid returns a minimum-weight independent
+  set of size $M$ for every $M$. Two rules that both attain that optimum must
+  therefore carry equal total weight and span the same subspace, differing at
+  most by the choice of coset representative, which is unobservable. This is
+  what is measured: over the $84$ paired points of
+  Sections~\ref{sec:q4} and~\ref{sec:budget} the two rules agree in total cost
+  to $2.7\times10^{-14}$, in span at every point, and in $K$ at every point,
+  while never returning the same row set.
+
+\item At the full budget the selection rule cannot affect the partition, and at
+  the reduced budget it does not. With $M=n-\rsp$ the LAS span is the entire
+  quotient for every rule, so the partition --- and hence the retained
+  dimension, the block count and $\Dmax$ --- is identical by construction. The
+  campaign was therefore repeated at $M=n-\rsp-1$, where the span is a proper
+  subspace and a rule \emph{may} change the partition. It does not: the
+  cost-ranked rules again span the same subspace and return the same $K$ at all
+  $42$ points, confirming that the agreement of Conclusion~4 follows from
+  matroid optimality and not from the degenerate budget.
+
+  The constrained quota rule is the only rule that differs. It is more
+  expensive in selection cost at all $84$ points, yet does not require a larger
+  coupled space: for $\mathrm{H_2O}$ it returns exactly the same $K$ at all
+  $40$ points, and for $\mathrm{N_2}$ under the NC cost it is lower at $5$ of
+  $11$ geometries at each budget, with $\overline{\Delta K}=-0.27$ and $-0.45$
+  and a sign that is not consistent. Ordering candidates by the selection cost
+  therefore did not order $K$ in this configuration. Because only one orbital
+  start was run, no scatter estimate exists and this difference is reported as
+  an observation, not a significant effect.
+
+\end{enumerate}
+
+\paragraph{Work outstanding.}
+Three items remain, in order of importance. First, a robustness study over
+several orbital starts at fixed pool: the quota difference above, and the three
+$\mathrm{N_2}$ geometries at which $K$ rises when the budget is reduced
+(Section~\ref{sec:budget}), are both of a size that a single start cannot
+separate from optimiser scatter. Second, extension of the candidate
+representation to spin-resolved rows, so that the ground set is $\FF^{N}$
+rather than $\iota(\FF^{n})$ (Section~\ref{sec:classfunction}(0)) and the
+exhaustive control can be repeated over the full quotient. Third, recording the
+selection costs at the converged orbitals rather than at the starting frame,
+which affects the reported cost bookkeeping but not $K$. The two verification
+checks flagged in Section~\ref{sec:verification} also remain to be performed.
+
+%=====================================================================
+\appendix
+\section{Artifacts}
+\label{sec:artifacts}
+\small
+\begin{tabular}{@{}p{0.40\textwidth}p{0.56\textwidth}@{}}
+\toprule
+Artifact & Producer \\
+\midrule
+per-geometry exact parity matrices &
+  \texttt{scripts/write\_default\_exact\_parity.py -{}-chk} \\
+endpoint grid &
+  \texttt{scripts/trillium\_rerun\_fixed\_grid.sh} \\
+$W$, exact-block count, Eq.~\eqref{eq:K} verification &
+  \texttt{scripts/audit/audit\_06\_verify\_rerun.sh} \\
+reproducibility record, per point &
+  \texttt{scripts/audit/audit\_07\_repro\_record.sh} \\
+exhaustive control &
+  \texttt{scripts/exhaustive\_quotient\_check.py} \\
+self-consistent exhaustive fixed point &
+  \texttt{scripts/exhaustive\_selfconsistent.py} \\
+software version manifest &
+  emitted by the audit scripts into \texttt{tables/audit/} \\
+\bottomrule
+\end{tabular}
+\normalsize
+
+\end{document}

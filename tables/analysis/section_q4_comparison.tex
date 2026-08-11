@@ -1,0 +1,240 @@
+% Replaces the section currently titled
+%   "Q4: obstructions to comparing the selection rules"
+% Requires: \label{sec:classfunction} (Proposition~\ref{prop:coset}),
+%           \label{sec:budget}, and the generated tables
+%           gen_pool_equivalence.tex, gen_k_by_arm.tex.
+
+\section{Q4: comparison of the selection rules}
+\label{sec:q4}
+
+\subsection{Statement of the question}
+
+The question posed in the introduction conflates two claims that admit answers
+of very different strength, and they are separated here.
+
+\begin{description}
+\item[Q4(i)] Does the polynomial candidate library of
+  Eq.~\eqref{eq:Cpoly} select the same pool as an exhaustive search over
+  the full candidate space?
+\item[Q4(ii)] Does the choice of selection rule change the coupled dimension
+  $K$?
+\end{description}
+
+Q4(i) is answered affirmatively, and Proposition~\ref{prop:coset} shows why the
+answer is forced rather than incidental. Q4(ii) is answered only in part: a
+difference is observed for one rule, but at a single orbital start it is not
+separable from optimiser scatter, and it is reported as an observation.
+
+\subsection{Design}
+
+Three rules are compared at fixed budget, cost function, molecule and geometry:
+
+\begin{description}
+\item[exhaustive] greedy ranking over the full candidate space, i.e.\ the
+  minimum-weight independent set of the matroid of
+  Section~\ref{sec:classfunction}(i);
+\item[iterative] greedy ranking restricted to the polynomial library
+  $\Ccal^{(t)}$, re-formed at each macroiteration;
+\item[quota] greedy ranking constrained to a prescribed split of single-orbital
+  and quartet supports, $(n_{\mathrm{s}},n_{\mathrm{q}})=(2,\,2)$ for
+  $\mathrm{H_2O}$ and $(3,\,3)$ for $\mathrm{N_2}$ at $M=\dim\Qcal$, and $(2,\,1)$ and $(3,\,2)$
+  respectively at $M=\dim\Qcal-1$.
+\end{description}
+
+\paragraph{Choice of the quota split.}
+The split $(n_{\mathrm{s}},n_{\mathrm{q}})$ is a prescribed input, not a
+quantity the procedure derives, and it must satisfy
+$n_{\mathrm{s}}+n_{\mathrm{q}}=M$. At the full budget the balanced splits
+$(2,\,2)$ and $(3,\,3)$ were adopted. At the reduced budget the deficit of one was
+taken from the quartets, giving $(2,\,1)$ and $(3,\,2)$, so that the number of
+single-orbital rows is held fixed across the two budgets and the two campaigns
+differ in one respect only. The complementary choices $(1,\,2)$ and $(2,\,3)$ were
+not run. Consequently the results below characterise \emph{these} splits and
+not quota selection in general: a different split could in principle come
+closer to, or reach, the unconstrained optimum. This is a limitation of the
+present campaign rather than a property of quota rules, and it is repeated in
+Section~\ref{sec:q4limits}.
+
+\paragraph{Sign convention.}
+\begin{sloppypar}
+Throughout this section
+\begin{equation}
+\Delta K \;=\; K_{\mathrm{quota}}-K_{\mathrm{exhaustive}},
+\label{eq:dK}
+\end{equation}
+\noindent evaluated at fixed molecule, geometry, cost function and budget, so
+that a \emph{negative} $\Delta K$ means the quota rule required a smaller coupled
+space than the exhaustive rule. Comparisons between the iterative and
+exhaustive rules are reported as agreement or disagreement rather than as a
+signed difference, since they never disagree.
+\end{sloppypar}
+
+\paragraph{Counting of points.}
+The two campaigns comprise $252$ runs: $21$ geometries ($10$ for
+$\mathrm{H_2O}$, $11$ for $\mathrm{N_2}$) $\times$ $2$ cost functions $\times$
+$3$ rules $\times$ $2$ budgets. A \emph{pairwise comparison} of two rules
+therefore has $21\times2\times2=84$ points, and a statement restricted to one
+molecule has $10\times2\times2=40$ points for $\mathrm{H_2O}$ and
+$11\times2\times2=44$ for $\mathrm{N_2}$.
+
+Each rule is followed by the same orbital optimisation of
+Eq.~\eqref{eq:objective}, started from the identity, and by the same Clifford
+reduction and coupled-dimension measurement, Eq.~\eqref{eq:K}. The grids are
+ten $\mathrm{H_2O}$ geometries
+($R=0.958$--$2.5$\,\AA) and eleven $\mathrm{N_2}$ geometries ($R=1.2$--$2.2$\,\AA),
+each with both cost functions and all three rules, at two budgets: $126$
+points per budget, $252$ in total. Every point satisfies the preconditions of
+Section~\ref{sec:verification} --- retained reference weight $W=1$ to within
+$2.2\times10^{-7}$, $n_{\mathrm{exact}}=r$, and $M$ at the recorded budget ---
+so no point is excluded from what follows.
+
+Because the rows reported by a rule are defined only up to $\Ecal$
+(Section~\ref{sec:classfunction}), rules are compared by the spanned subspace
+$\operatorname{span}\{\bar g_1,\dots,\bar g_M\}\subseteq\Qcal$ and by the total
+selection cost $\sum_j \bar c(\bar g_j)$, never by row equality.
+
+\subsection{Q4(i): the polynomial library attains the exhaustive optimum}
+
+\begin{table}[htbp]
+\centering
+\input{gen_pool_equivalence.tex}
+\caption{Agreement between the polynomial (iterative) and exhaustive rules.
+``points'' counts geometries at the stated budget and cost function;
+$\Delta c=\sum_j\bar c(\bar g_j)$ differs between the two rules;
+``span agree'' counts points at which
+$\operatorname{span}\{\bar g_j\}$ coincides; ``$K$ agree'' counts points at
+which the coupled dimension coincides. Row sets never coincide.}
+\label{tab:poolequiv}
+\end{table}
+
+Table~\ref{tab:poolequiv} reports agreement in three distinct senses, and the
+distinction matters. Across both budgets and both cost functions the two rules
+agree in \emph{total selection cost} to floating-point round-off, in the
+\emph{spanned subspace} of $\Qcal$ at every point, and in the \emph{coupled
+dimension} $K$ at every point. They do \emph{not} agree in the reported rows:
+at no point of either campaign do the two rules return the same row set. Where
+this section says the rules are ``identical'', it therefore means identical in
+$\bar c$, in span, and in $K$ --- never in rows.
+
+That combination is exactly what Section~\ref{sec:classfunction}(ii) requires:
+minimum-weight independent sets of equal total weight need not coincide as
+sets, and the residual freedom is the choice of coset representative, which by
+Proposition~\ref{prop:coset} is unobservable. The agreement is therefore not
+evidence that the polynomial library happens to be adequate; it is a
+consequence of greedy optimality on the matroid, and the measurement confirms
+that the implementation realises it.
+
+The practical consequence is that the polynomial library is not an
+approximation to the exhaustive search at these system sizes: it attains the
+same optimum at polynomial rather than exponential candidate cost.
+
+\subsection{Q4(ii): the effect of the selection rule on \texorpdfstring{$K$}{K}}
+
+\input{gen_k_by_arm.tex}
+
+Three observations follow, in decreasing order of evidential strength.
+
+\paragraph{Cost-ranked rules do not differ.}
+The exhaustive and iterative columns of Table~\ref{tab:kbyarm} carry the same
+$K$ at all $84$ points, in the sense fixed above (equal $\bar c$, equal span,
+equal $K$; unequal rows). By the argument of
+Section~\ref{sec:classfunction}(ii) this is structural, and it is therefore not
+an independent comparison of two rules: they realise the same optimum.
+
+\paragraph{The quota rule as configured is suboptimal in selection cost.}
+The quota constraint prevents the greedy optimum from being reached, and the
+recorded total selection cost of the quota pool exceeds that of the exhaustive
+pool at every one of the $84$ points, never falling below it. The constraint is
+thus active at every geometry, and the quota arm is a genuinely different
+selection rather than a relabelling. This is a statement about the splits
+listed in Section~\ref{sec:q4} only; a different admissible split
+$(n_{\mathrm{s}},n_{\mathrm{q}})$ with $n_{\mathrm{s}}+n_{\mathrm{q}}=M$ could
+in principle attain the unconstrained optimum, and no such split was tested.
+
+\paragraph{A lower selection cost did not produce a lower $K$.}
+Despite being worse under the objective that the ranking minimises, the quota
+rule did not require a larger coupled space. Table~\ref{tab:dk} counts
+$\Delta K$ of Eq.~\eqref{eq:dK} as (lower, equal, higher) over the geometries
+of each block.
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{llll}
+\hline
+system & cost & $M=n-\rsp$ & $M=n-\rsp-1$\\
+\hline
+$\mathrm{H_2O}$ & NC       & $(0,10,0)$, $\overline{\Delta K}=+0.00$ & $(0,10,0)$, $+0.00$\\
+$\mathrm{H_2O}$ & variance & $(0,10,0)$, $+0.00$ & $(0,10,0)$, $+0.00$\\
+$\mathrm{N_2}$  & NC       & $(5,4,2)$, $-0.27$ & $(5,5,1)$, $-0.45$\\
+$\mathrm{N_2}$  & variance & $(1,10,0)$, $-0.09$ & $(1,10,0)$, $-0.09$\\
+\hline
+\end{tabular}
+\caption{Quota rule against the exhaustive rule, counted as
+(lower, equal, higher) in $\Delta K=K_{\mathrm{quota}}-K_{\mathrm{exhaustive}}$
+over the $10$ ($\mathrm{H_2O}$) or $11$ ($\mathrm{N_2}$) geometries of each
+block, with the mean $\overline{\Delta K}$. Negative favours the quota rule.}
+\label{tab:dk}
+\end{table}
+
+The effect is confined to $\mathrm{N_2}$ and predominantly to the NC cost. For
+$\mathrm{H_2O}$ the quota pool is more expensive in $\bar c$ at all $40$ points
+($10$ geometries $\times$ $2$ cost functions $\times$ $2$ budgets) yet returns
+exactly the same $K$ at all $40$; under the parity variance the $\mathrm{N_2}$
+difference is a single geometry at each budget. Where a difference does appear
+its sign is not consistent: over $\mathrm{N_2}$ and both cost functions the
+range of $\Delta K$ is $[-2,+3]$ at $M=n-\rsp$ and $[-2,+1]$ at $M=n-\rsp-1$,
+the largest single departure being $+3$ at $R=1.2$\,\AA.
+
+This bears on the interpretation of the NC score. The exhaustive rule minimises
+$\bar c$ exactly, whereas $K$ is measured after the orbital optimisation of
+Eq.~\eqref{eq:objective}; the two are separated by that optimisation. A rule
+that is worse in $\bar c$ and no worse in $K$ is therefore not a contradiction.
+What these data establish is narrow and is stated as such: \emph{in the present
+configuration} --- two molecules in a minimal basis, the quota splits listed
+above, one orbital start --- ordering candidate rows by $\bar c$ did not order
+the resulting $K$, and at $40$ of the points a strictly worse $\bar c$ produced
+an identical $K$. Whether $\bar c$ is monotonically related to $K$ in general
+is not addressed here, and no such claim is made; the observation is that the
+relationship failed to hold in this configuration. In particular the exhaustive
+column must not be read as a lower bound on $K$: it minimises the selection
+cost, not the coupled dimension.
+
+\subsection{What these data do not establish}
+\label{sec:q4limits}
+
+\begin{enumerate}
+\item \textbf{No scatter estimate.} A single orbital start (the identity) was
+run at each point, so no within-configuration variance is available. The
+observed differences in $K$ are of the same order as the shifts seen between
+budgets at fixed rule, and a difference of one or two units must be read as
+``no detectable difference at one start''. Deciding whether the quota effect is
+real requires repeating a subset with randomised starts at fixed pool; that
+study is identified in Section~\ref{sec:conclusions} and has not been performed.
+\item \textbf{$\mathrm{H_2O}$ is uninformative at the reduced budget.} At
+$M=\dim\Qcal-1$ the decoupled energy already lies within $\varepsilon_E$ of
+$E_{\mathrm{target}}$ at nine of ten $\mathrm{H_2O}$ geometries, giving $K=1$. These
+are floor values, not agreement between rules, and they carry no discriminating
+information; the $\mathrm{N_2}$ rows carry the entire Q4(ii) comparison.
+\item \textbf{One quota split per budget.} The constrained rule was run at
+$(n_{\mathrm{s}},n_{\mathrm{q}})=(2,2)/(3,3)$ and $(2,1)/(3,2)$ only. The
+complementary splits were not tested, so ``the quota rule is suboptimal in
+$\bar c$'' is established for these splits and not for quota selection as such.
+\item \textbf{Spin-symmetric ground set.} Candidates are products of $\Zb_p$
+(Section~\ref{sec:classfunction}(0)), so every optimum reported here is an
+optimum over $\iota(\FF^{n})$, not over $\FF^{N}$. A spin-resolved search may
+admit lower-cost pools at the same $M$.
+\item \textbf{Scope.} Two molecules in a minimal basis, one orbital-rotation
+parameterisation, and one reference convention. Nothing here establishes
+behaviour at larger basis sets or for systems whose exact group is not a point
+group supplemented by particle-number parities.
+\item \textbf{Near-degenerate roots.}\begin{sloppypar}
+The parent FCI is solved with \texttt{pyscf.fci.direct\_spin1} at
+\texttt{conv\_tol}\,$=10^{-10}$ and \texttt{max\_cycle}\,$=10^{4}$, from
+PySCF's deterministic initial guess; no
+random seed enters. Where the FCI gap is small --- $\mathrm{H_2O}$ at
+$R\ge2.33$\,\AA, gap $4.5\times10^{-4}$\,Ha --- no explicit tie-break is
+imposed on near-degenerate eigenvectors, so the selected vector is reproducible
+for a fixed build but is not guaranteed to be stable across BLAS or PySCF
+versions. Energies are unaffected; overlap-ordered quantities in principle are.
+\end{sloppypar}
+\end{enumerate}
