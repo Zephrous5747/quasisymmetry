@@ -317,13 +317,24 @@ def x_to_rotation(x: np.ndarray, norb: int, pairs=None) -> np.ndarray:
 
 def get_fci(dumpdata: dict, flatten: bool = True) -> tuple[float, np.ndarray]:
     cisolver = pyscf.fci.direct_spin1.FCI()
-    cisolver.max_cycle = 10000 
+    cisolver.max_cycle = 10000
     cisolver.conv_tol = 1e-10
+    # dumpdata["NELEC"] is the bare total electron count from the FCIDUMP
+    # header. Passing that straight to direct_spin1.FCI.kernel makes pyscf
+    # silently assume a closed-shell (nelec//2, nelec//2) split, ignoring
+    # MS2 entirely -- correct by coincidence for singlets, silently wrong
+    # (or, for strongly spin-polarized cases, a hard reshape crash further
+    # downstream) for any non-singlet FCIDUMP. Derive the actual
+    # (n_alpha, n_beta) split from NELEC and MS2, same as
+    # ffsim.MolecularData.from_fcidump / chemistry.load_moldata already do.
+    ms2 = dumpdata.get("MS2", 0)
+    nelec_total = dumpdata["NELEC"]
+    nelec = ((nelec_total + ms2) // 2, (nelec_total - ms2) // 2)
     e_fci, fcivec = cisolver.kernel(
         dumpdata["H1"],
         dumpdata["H2"],
         dumpdata["NORB"],
-        dumpdata["NELEC"],
+        nelec,
         ecore=dumpdata["ECORE"],
     )
     if not cisolver.converged:
